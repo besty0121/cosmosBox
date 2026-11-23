@@ -1,0 +1,291 @@
+export interface Vec3 {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export type BodyCategory =
+  | 'star'
+  | 'rocky'
+  | 'gas_giant'
+  | 'ice_giant'
+  | 'moon'
+  | 'asteroid'
+  | 'comet'
+  | 'black_hole'
+  | 'neutron_star';
+
+export type ScaleMode = 'playable' | 'real';
+
+export type LaunchMode = 'orbit' | 'slingshot' | 'stationary';
+
+export type CameraMode = 'orbit' | 'surface' | 'cinematic';
+
+export interface CelestialBody {
+  id: string;
+  name: string;
+  category: BodyCategory;
+  /** Mass in kg */
+  mass: number;
+  /** Physical radius in meters */
+  radius: number;
+  /** Position in meters (SI) */
+  position: Vec3;
+  /** Velocity in m/s (SI) */
+  velocity: Vec3;
+  /** Current acceleration in m/s^2 (SI) */
+  acceleration: Vec3;
+
+  // Thermal & surface properties
+  /** Effective / surface temperature in Kelvin */
+  temperature: number;
+  /** Computed radiative equilibrium temperature in Kelvin */
+  equilibriumTemp?: number;
+  /** Radiated luminosity in Watts (mainly stars) */
+  luminosity: number;
+  /** Bond albedo [0..1] */
+  albedo: number;
+  /** Greenhouse warming factor [0..3] */
+  greenhouse: number;
+  /** Fraction of surface covered in liquid water [0..1] */
+  waterFraction: number;
+  /** Atmosphere thickness [0..2] */
+  atmosphereDensity: number;
+  /** Extra heat glow from recent impacts or tidal stress [0..1] */
+  impactHeat: number;
+  /** Tidal stress indicator [0..1] as body enters Roche limit */
+  rocheStress?: number;
+  /** Black hole accretion flare boost [0..1] when devouring matter */
+  accretionFlare?: number;
+  /** Habitability score [0..100] */
+  habitability?: number;
+  /** Geomagnetic aurora storm intensity [0..1.5] (0 = off, ~0.75 = Kp 5, 1.5 = G5 Kp 9 storm) */
+  auroraIntensity?: number;
+  /** Transient magnetosphere bow-shock shield flash [0..1] when struck by a solar CME */
+  magnetosphereFlash?: number;
+  /** Relativistic polar blazar jet power [0..1] ignited during black hole TDE / hyper-accretion */
+  blazarJetPower?: number;
+  /** Marks a compact degenerate White Dwarf capable of Roche-lobe accretion -> Type Ia Supernova at 1.44 M_sun */
+  isWhiteDwarf?: boolean;
+
+  // Rotation & visual appearance
+  /** Sidereal rotation period in seconds */
+  rotationPeriod: number;
+  /** Current rotation angle in radians */
+  rotationAngle: number;
+  /** Axial tilt in radians */
+  axialTilt: number;
+  /** Primary hex color */
+  color: string;
+  /** Secondary hex color (continents / bands / flare) */
+  secondaryColor: string;
+  /** Atmosphere glow hex color */
+  atmosphereColor: string;
+  /** Planetary ring properties */
+  hasRings?: boolean;
+  ringInner?: number; // multiplier of radius
+  ringOuter?: number; // multiplier of radius
+  ringColor?: string;
+  /** Procedural noise seed */
+  seed: number;
+
+  // Orbit trail (in SI meters)
+  trail: Vec3[];
+  /** Optional parent body id hint for orbital telemetry */
+  parentId?: string;
+  alive: boolean;
+}
+
+export interface DebrisParticle {
+  position: Vec3;
+  velocity: Vec3;
+  /** Base cool color RGB [0..1] */
+  baseColor: [number, number, number];
+  /** Temperature in K (hot debris glows incandescent orange/white and cools over time) */
+  temperature: number;
+  /** Visual size scale */
+  size: number;
+  /** Age in simulated seconds */
+  age: number;
+  /** Max lifetime in simulated seconds (long for rings, shorter for supernova ejecta) */
+  maxAge: number;
+  /** Kind of debris for rendering nuances */
+  kind: 'impact' | 'roche' | 'supernova';
+  alive: boolean;
+}
+
+export interface CollisionEvent {
+  position: Vec3;
+  survivorId: string;
+  absorbedName: string;
+  survivorName: string;
+  impactEnergy: number;
+  combinedRadius: number;
+  color: string;
+  timestamp: number;
+  catastrophic?: boolean;
+}
+
+export interface TidalDisruptionEvent {
+  position: Vec3;
+  victimName: string;
+  primaryName: string;
+  isBlackHole: boolean;
+  timestamp: number;
+}
+
+export interface SupernovaEvent {
+  position: Vec3;
+  starName: string;
+  remnantCategory: 'neutron_star' | 'black_hole' | 'none';
+  remnantId: string;
+  color: string;
+  timestamp: number;
+  isTypeIa?: boolean;
+}
+
+export interface CmeWave {
+  id: string;
+  starId: string;
+  starName: string;
+  origin: Vec3;
+  direction: Vec3;
+  radiusMeters: number;
+  maxRadiusMeters: number;
+  halfAngleRad: number;
+  intensity: number;
+  color: string;
+  hitBodyIds: string[];
+}
+
+export interface CmeImpactEvent {
+  position: Vec3;
+  starName: string;
+  targetName: string;
+  targetId: string;
+  hasAurora: boolean;
+  timestamp: number;
+}
+
+export interface TidalStreamLink {
+  kind: 'tde' | 'roche_bridge';
+  donorId: string;
+  accretorId: string;
+  intensity: number; // [0..1]
+  color: string;
+}
+
+export interface KilonovaEvent {
+  position: Vec3;
+  nameA: string;
+  nameB: string;
+  remnantId: string;
+  isBlackHoleMerger: boolean;
+  timestamp: number;
+}
+
+export interface GravitationalWaveSource {
+  active: boolean;
+  center: Vec3;
+  phase: number;
+  amplitude: number;
+  separationMeters: number;
+}
+
+export interface SimStepEvents {
+  collisions: CollisionEvent[];
+  tidalDisruptions: TidalDisruptionEvent[];
+  supernovas: SupernovaEvent[];
+  kilonovas: KilonovaEvent[];
+  cmeImpacts: CmeImpactEvent[];
+}
+
+export interface SpawnTemplate {
+  id: string;
+  name: string;
+  subtitle: string;
+  category: BodyCategory;
+  mass: number;
+  radius: number;
+  temperature: number;
+  luminosity: number;
+  albedo: number;
+  greenhouse: number;
+  waterFraction: number;
+  atmosphereDensity: number;
+  rotationPeriod: number;
+  axialTilt: number;
+  color: string;
+  secondaryColor: string;
+  atmosphereColor: string;
+  hasRings?: boolean;
+  ringInner?: number;
+  ringOuter?: number;
+  ringColor?: string;
+}
+
+export interface ScenarioDefinition {
+  id: string;
+  name: string;
+  description: string;
+  defaultTimeScale: number; // sim seconds per real second
+  defaultCameraDistanceAU: number;
+  defaultFocusBodyName?: string;
+  defaultShowGravityGrid?: boolean;
+  autoLaunchCme?: boolean;
+  createBodies: () => CelestialBody[];
+  setupGalaxy?: (
+    spawnSpiralDisk: (
+      core: CelestialBody,
+      count: number,
+      innerRadiusM: number,
+      outerRadiusM: number,
+      tiltXDeg: number,
+      tiltZDeg: number,
+      spinDir: 1 | -1,
+      coreHue: 'warm' | 'cool'
+    ) => void,
+    bodies: CelestialBody[]
+  ) => void;
+}
+
+export interface ScreenLabel {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  color: string;
+  selected: boolean;
+  subtitle: string;
+}
+
+export interface BodySnapshot {
+  id: string;
+  name: string;
+  category: BodyCategory;
+  mass: number;
+  radius: number;
+  densityKgM3: number;
+  speed: number;
+  temperature: number;
+  equilibriumTemp: number;
+  luminosity: number;
+  albedo: number;
+  greenhouse: number;
+  waterFraction: number;
+  atmosphereDensity: number;
+  impactHeat: number;
+  rocheStress: number;
+  accretionFlare: number;
+  habitability: number;
+  auroraIntensity?: number;
+  magnetosphereFlash?: number;
+  blazarJetPower?: number;
+  isWhiteDwarf?: boolean;
+  rotationPeriod: number;
+  axialTiltDeg: number;
+  spectralClass: string | null;
+  distanceToPrimaryAU: number | null;
+  primaryName: string | null;
+  color: string;
+}
