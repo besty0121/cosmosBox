@@ -56,6 +56,7 @@ interface CosmosState {
   showVectors: boolean;
   showRocheLimits: boolean;
   showLabels: boolean;
+  showSpaceWeatherField: boolean;
   autoThermo: boolean;
   audioMuted: boolean;
 
@@ -98,6 +99,7 @@ interface CosmosState {
   toggleVectors: () => void;
   toggleRocheLimits: () => void;
   toggleLabels: () => void;
+  toggleSpaceWeatherField: () => void;
   toggleAutoThermo: () => void;
   toggleAudioMute: () => void;
 
@@ -138,7 +140,7 @@ interface CosmosState {
     }>
   ) => void;
   triggerBodySupernova: (id: string) => void;
-  launchSolarCME: (starId?: string) => void;
+  launchSolarCME: (starId?: string, mode?: 'random' | 'target') => void;
 
   // Persistence, Snapshots & Photo
   takeSnapshot: () => void;
@@ -201,6 +203,7 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
   showVectors: false,
   showRocheLimits: false,
   showLabels: false,
+  showSpaceWeatherField: true,
   autoThermo: true,
   audioMuted: false,
 
@@ -360,6 +363,18 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
     const next = !showLabels;
     if (sceneManager) sceneManager.showLabels = next;
     set({ showLabels: next, screenLabels: next ? get().screenLabels : [] });
+  },
+
+  toggleSpaceWeatherField: () => {
+    const { sceneManager, showSpaceWeatherField } = get();
+    const next = !showSpaceWeatherField;
+    if (sceneManager) sceneManager.showSpaceWeatherField = next;
+    set({ showSpaceWeatherField: next });
+    get().showToast(
+      next
+        ? '已开启 NASA SVS 科学视图：显示太阳风带电粒子流与 3D 磁力线'
+        : '已切换至纯肉眼光学模式：仅保留可见耀斑、日珥与地球极光'
+    );
   },
 
   toggleAutoThermo: () => {
@@ -594,16 +609,21 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
     });
   },
 
-  launchSolarCME: (starId) => {
+  launchSolarCME: (starId, mode = 'random') => {
     const { engine } = get();
     if (!engine) return;
-    const wave = engine.launchCME(starId);
+    const isRandom = mode === 'random';
+    const wave = engine.launchCME(starId, undefined, isRandom);
     if (!wave) {
       get().showToast('当前场景没有可喷发日冕物质抛射的恒星');
       return;
     }
     cosmosAudio.playCmeLaunch();
-    get().showToast(`☀️ ${wave.starName} 爆发超级日冕物质抛射（CME）！高速太阳风磁云正飞向行星……`);
+    get().showToast(
+      isRandom
+        ? `☀️ ${wave.starName} 活跃黑子区发生随机日冕爆发（CME）！`
+        : `☀️ ${wave.starName} 朝行星方向爆发超级日冕物质抛射（CME）！`
+    );
   },
 
   takeSnapshot: () => {

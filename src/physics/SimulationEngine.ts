@@ -127,34 +127,64 @@ export class SimulationEngine {
   }
 
   /**
-   * Launches a 3D Coronal Mass Ejection (CME) solar-wind plasma cloud from a star,
-   * automatically aimed toward Earth (or targetBodyId / nearest planet) so it can strike
-   * the planet's magnetosphere bow-shock shield and trigger a G5 Kp 9 aurora storm!
+   * Launches a 3D Coronal Mass Ejection (CME) from a star:
+   * - `randomRegion = true`: erupts from a random 3D active sunspot region in the ±34° solar active belt (360° longitude)!
+   * - `randomRegion = false`: aims toward Earth / targetBodyId (with subtle ±5° active-region variation) to test magnetosphere & G5 auroras.
    */
-  public launchCME(starId?: string, targetBodyId?: string): CmeWave | null {
+  public launchCME(
+    starId?: string,
+    targetBodyId?: string,
+    randomRegion = false
+  ): CmeWave | null {
     const star =
       (starId ? this.getBody(starId) : null) ??
       this.bodies.find((b) => b.alive && b.category === 'star' && !b.isWhiteDwarf) ??
       null;
     if (!star) return null;
 
-    let target: CelestialBody | null = targetBodyId ? this.getBody(targetBodyId) : null;
-    if (!target) {
-      target =
-        this.bodies.find((b) => b.alive && b.name.includes('地球')) ??
-        this.bodies.find((b) => b.alive && b.category === 'rocky' && b.atmosphereDensity > 0.15) ??
-        this.bodies.find((b) => b.alive && b.id !== star.id && b.category !== 'star') ??
-        null;
-    }
-
     let dir: Vec3 = { x: 1, y: 0, z: 0 };
-    if (target) {
-      const dx = target.position.x - star.position.x;
-      const dy = target.position.y - star.position.y;
-      const dz = target.position.z - star.position.z;
-      const d = Math.hypot(dx, dy, dz);
-      if (d > 1) {
-        dir = { x: dx / d, y: dy / d, z: dz / d };
+
+    if (randomRegion) {
+      // Authentic solar butterfly-diagram sunspot active latitude belt (±6° to ±34° N/S, any 0..360° longitude!)
+      const hemi = Math.random() < 0.5 ? 1 : -1;
+      const latRad = hemi * ((6 + Math.random() * 28) * Math.PI) / 180;
+      const lonRad = Math.random() * Math.PI * 2;
+      const cosLat = Math.cos(latRad);
+      dir = {
+        x: cosLat * Math.cos(lonRad),
+        y: Math.sin(latRad),
+        z: cosLat * Math.sin(lonRad),
+      };
+    } else {
+      let target: CelestialBody | null = targetBodyId ? this.getBody(targetBodyId) : null;
+      if (!target) {
+        target =
+          this.bodies.find((b) => b.alive && b.name.includes('地球')) ??
+          this.bodies.find((b) => b.alive && b.category === 'rocky' && b.atmosphereDensity > 0.15) ??
+          this.bodies.find((b) => b.alive && b.id !== star.id && b.category !== 'star') ??
+          null;
+      }
+
+      if (target) {
+        const dx = target.position.x - star.position.x;
+        const dy = target.position.y - star.position.y;
+        const dz = target.position.z - star.position.z;
+        const d = Math.hypot(dx, dy, dz);
+        if (d > 1) {
+          // Subtle natural ±5° active-region offset so repeated targeted bursts aren't carbon-identical
+          const jitterYaw = (Math.random() - 0.5) * 0.14;
+          const jitterPitch = (Math.random() - 0.5) * 0.16;
+          const bx = dx / d;
+          const by = dy / d;
+          const bz = dz / d;
+          const cosY = Math.cos(jitterYaw);
+          const sinY = Math.sin(jitterYaw);
+          const rx = bx * cosY - bz * sinY;
+          const rz = bx * sinY + bz * cosY;
+          const ry = by + jitterPitch;
+          const len = Math.hypot(rx, ry, rz) || 1;
+          dir = { x: rx / len, y: ry / len, z: rz / len };
+        }
       }
     }
 

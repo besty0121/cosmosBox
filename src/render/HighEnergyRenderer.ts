@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 import { METERS_TO_SCENE } from '../physics/constants';
 import { CelestialBody, CmeWave, TidalStreamLink, Vec3 } from '../types/cosmos';
-import { BodyRenderer } from './BodyRenderer';
+import { BodyRenderer, SHARED_PROMINENCE_GEO } from './BodyRenderer';
+import { createProminenceMaterial } from './shaders/bodyShaders';
+import { textureAtlas } from './TextureAtlas';
 
 const GLSL_NOISE_HELPERS = /* glsl */ `
   float hHash2(vec2 p) {
@@ -22,31 +24,96 @@ const GLSL_NOISE_HELPERS = /* glsl */ `
   float hFbm2(vec2 p) {
     return 0.62 * hNoise2(p) + 0.38 * hNoise2(p * 2.07 + vec2(13.7, 7.3));
   }
+  float hHash3(vec3 p) {
+    p = fract(p * 0.1031);
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.x + p.y) * p.z);
+  }
+  float hNoise3(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    vec3 u = f * f * (3.0 - 2.0 * f);
+    return mix(
+      mix(
+        mix(hHash3(i + vec3(0,0,0)), hHash3(i + vec3(1,0,0)), u.x),
+        mix(hHash3(i + vec3(0,1,0)), hHash3(i + vec3(1,1,0)), u.x),
+        u.y
+      ),
+      mix(
+        mix(hHash3(i + vec3(0,0,1)), hHash3(i + vec3(1,0,1)), u.x),
+        mix(hHash3(i + vec3(0,1,1)), hHash3(i + vec3(1,1,1)), u.x),
+        u.y
+      ),
+      u.z
+    );
+  }
+  float hFbm3(vec3 p) {
+    return 0.62 * hNoise3(p) + 0.38 * hNoise3(p * 2.05 + vec3(11.3, 7.1, 5.7));
+  }
 `;
 
-// 1. Authentic NASA SOHO/STEREO 3-Part CME Magnetic Flux-Rope & Delicate Micro-Spark Geometry
-//    ZERO fake orange umbrella dome, ZERO blobby snowball puffs! Uses 7 silky braided flux-rope arches + 320 pin-fine plasma sparks.
-function buildCmeCloudGeometry(): THREE.BufferGeometry {
-  const count = 320;
-  const pos = new Float32Array(count * 3);
-  // aParams: x = arch position [0..1], y = radial spread [0..1], z = twist azimuth [0..2PI], w = kind (0=leading filament spark, 1=flux rope spark, 2=prominence spark)
-  const params = new Float32Array(count * 4);
-  for (let i = 0; i < count; i++) {
-    const r = Math.random();
-    const kind = r < 0.45 ? 0 : r < 0.80 ? 1 : 2;
-    params[i * 4] = Math.random();
-    params[i * 4 + 1] = Math.random();
-    params[i * 4 + 2] = Math.random() * Math.PI * 2;
-    params[i * 4 + 3] = kind;
+// 1. Authentic NASA SVS *Dynamic Earth* Fluid Micro-Particle Solar Storm Geometry:
+//    ZERO fake gas clouds, ZERO stiff wireframe lines, ZERO dotty prominence glitter!
+//    2,400 fluid-advected micro-fine velocity-elongated solar wind & CME ion particles organized into 96 curl-warped
+//    plasma currents that physically part & deflect around Earth's parabolic magnetopause bow shock!
+function buildSolarWindParticlesGeometry(count = 2400): THREE.BufferGeometry {
+  const positions = new Float32Array(count * 3); // computed 100% in GPU vertex shader
+  const swA = new Float32Array(count * 4); // (theta, phi, phase, speed)
+  const swB = new Float32Array(count * 4); // (sizeScale, filamentSeed, particleSeed, kind [0=ambient+surge, 1=CME shock wave])
+
+  let s = 1337;
+  const rand = () => {
+    s = (s * 16807) % 2147483647;
+    return (s - 1) / 2147483646;
+  };
+  const gauss = () => (rand() + rand() + rand() - 1.5) * 0.66;
+
+  // Organize 4,600 micro-particles into 96 coherent fluid filaments so they flow like silky stardust rivers!
+  const filamentCount = 96;
+  const filTheta = new Float32Array(filamentCount);
+  const filPhi = new Float32Array(filamentCount);
+  const filSeed = new Float32Array(filamentCount);
+  for (let f = 0; f < filamentCount; f++) {
+    filTheta[f] = Math.pow(rand(), 0.78) * 0.68;
+    filPhi[f] = rand() * Math.PI * 2;
+    filSeed[f] = rand();
   }
+
+  for (let i = 0; i < count; i++) {
+    const isShockWave = i >= Math.floor(count * 0.45) ? 1.0 : 0.0;
+    const fIdx = i % filamentCount;
+
+    // Coherent filament core + tighter organic fluid grouping so 2,400 sparks flow as silky glowing plasma currents!
+    const spread = isShockWave > 0.5 ? 0.036 : 0.068;
+    const baseT = isShockWave > 0.5 ? filTheta[fIdx] * 0.74 : filTheta[fIdx];
+    const theta = Math.max(0.0, baseT + gauss() * spread);
+    const phi = filPhi[fIdx] + gauss() * (spread * 1.45);
+    const phase = rand();
+    const speed = isShockWave > 0.5 ? 0.82 + rand() * 0.42 : 0.68 + rand() * 0.64;
+
+    const sizeScale = 0.72 + Math.pow(rand(), 1.6) * 0.95;
+    const seed = rand();
+
+    const o4 = i * 4;
+    swA[o4] = theta;
+    swA[o4 + 1] = phi;
+    swA[o4 + 2] = phase;
+    swA[o4 + 3] = speed;
+
+    swB[o4] = sizeScale;
+    swB[o4 + 1] = filSeed[fIdx];
+    swB[o4 + 2] = seed;
+    swB[o4 + 3] = isShockWave;
+  }
+
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  geo.setAttribute('aParams', new THREE.BufferAttribute(params, 4));
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('aSwA', new THREE.BufferAttribute(swA, 4));
+  geo.setAttribute('aSwB', new THREE.BufferAttribute(swB, 4));
   return geo;
 }
 
-// Helical CME Magnetic Flux-Rope Arch Ribbon Geometry (uv.x across [-1..1], uv.y along arch [0..1])
-const SHARED_CME_LOOP_GEO = new THREE.PlaneGeometry(1, 1, 4, 48);
+const SHARED_SOLAR_WIND_PARTICLES_GEO = buildSolarWindParticlesGeometry(2400);
 
 // 2. Authentic NASA Goddard SVS 3D Magnetosphere Dipole Field Lines (Tsyganenko-inspired solar-wind distortion!)
 //    NO sci-fi glowing glass forcefield bubble! Pure delicate 3D magnetic field curves emerging from N/S magnetic poles,
@@ -171,230 +238,266 @@ function buildFlowParticleGeometry(count: number): THREE.BufferGeometry {
   return geo;
 }
 
-const SHARED_CME_CLOUD_GEO = buildCmeCloudGeometry();
 const SHARED_MAGNETO_LINES_GEO = buildMagnetosphereFieldLinesGeometry();
 const SHARED_STREAM_PARTICLES_GEO = buildFlowParticleGeometry(320);
 const SHARED_ACC_DISK_GEO = new THREE.RingGeometry(1.35, 3.8, 96);
 
+// Shared GLSL Parabolic Magnetopause Bow-Shock Deflection & Polar-Cusp Funneling Helper
+// Smoothly deflects incoming solar wind streamlines & IMF magnetic field lines around Earth's magnetosphere!
+const GLSL_BOW_SHOCK_DEFLECT = /* glsl */ `
+  uniform float uHasTarget;
+  uniform vec3 uTargetPos;
+  uniform float uEarthR;
+  uniform float uBowR;
+
+  vec3 deflectAroundMagnetosphere(vec3 p, float seed, bool allowCusp, out float bowCompress, out float cuspGlow) {
+    bowCompress = 0.0;
+    cuspGlow = 0.0;
+    if (uHasTarget < 0.5 || uBowR < 0.01) return p;
+
+    vec3 rel = p - uTargetPos;
+    float dz = rel.z; // < 0 sunward (upstream), > 0 nightside (downstream magnetotail)
+    vec2 perp = rel.xy;
+    float rPerp = length(perp);
+    vec2 perpDir = rPerp > 0.0005 ? (perp / rPerp) : vec2(0.0, 1.0);
+
+    // Parabolic magnetopause cavity envelope: nose at dz = -1.05 * uBowR, flaring smoothly into nightside tail
+    float axialMask =
+      smoothstep(-uBowR * 2.5, -uBowR * 0.72, dz) *
+      smoothstep(uBowR * 11.5, uBowR * 4.5, dz);
+    if (axialMask < 0.001) return p;
+
+    float s = max(0.0, dz + uBowR * 1.10);
+    float envR = uBowR * 1.16 * sqrt(s / (uBowR * 1.10));
+
+    // Smooth potential-flow deflection carving a crisp parabolic magnetopause cavity around Earth!
+    float influence = exp(-pow(rPerp / (envR * 2.35 + uBowR * 0.85), 2.0)) * axialMask;
+    float deflectedR = sqrt(rPerp * rPerp + envR * envR * influence * 1.16);
+
+    vec3 outPos = vec3(uTargetPos.xy + perpDir * deflectedR, p.z);
+
+    // Subset of polar-aligned charged particle streaks peel off into Earth's N/S polar cusps!
+    if (allowCusp) {
+      float polarAlign = smoothstep(0.64, 0.95, abs(perpDir.y));
+      float isCuspParticle = step(0.82, seed) * polarAlign * smoothstep(envR * 1.25, envR * 0.15, rPerp);
+      float cuspWindow =
+        smoothstep(-uBowR * 0.95, -uBowR * 0.1, dz) *
+        smoothstep(uBowR * 1.35, uBowR * 0.12, dz);
+      float cuspFactor = isCuspParticle * cuspWindow;
+      if (cuspFactor > 0.01) {
+        float hemi = perpDir.y >= 0.0 ? 1.0 : -1.0;
+        vec3 poleTarget = uTargetPos + vec3(0.0, hemi * uEarthR * 1.18, -uEarthR * 0.12);
+        outPos = mix(outPos, poleTarget, cuspFactor * 0.86);
+        cuspGlow = cuspFactor;
+      }
+    }
+
+    // Dayside bow-shock compression sheen where streamlines pile up along the sunward magnetopause!
+    float distToEnv = abs(deflectedR - envR) / (uBowR * 0.58);
+    float dayside =
+      smoothstep(uBowR * 3.0, -uBowR * 0.45, dz) *
+      smoothstep(-uBowR * 1.95, -uBowR * 0.50, dz);
+    bowCompress = exp(-distToEnv * distToEnv) * dayside * axialMask;
+
+    return outPos;
+  }
+`;
+
 /**
- * Pin-Fine Shimmering Coronal Plasma Micro-Sparks (320 particles, <= 4.5px, ZERO cotton-ball blobs!):
- * Adds delicate depth along the expanding braided flux-rope loops at rock-solid 60 FPS.
+ * 1A. Authentic NASA SVS *Dynamic Earth* Fluid Micro-Particle Solar Wind & CME River (60 FPS):
+ * - ZERO gas clouds, ZERO stiff wireframe lines, ZERO big cotton balls!
+ * - 2,400 velocity-elongated (2.6:1) micro-fine glittering ion droplets flowing in 96 curl-warped fluid currents.
+ * - Compresses into a shimmering, rippling golden-white river along the advancing CME shockwave front.
+ * - Physically parts & flows smoothly around Earth's parabolic magnetopause bow shock (flashing electric cyan-white
+ *   at bow-shock pile-up) while spiraling emerald-cyan motes straight into Earth's N/S polar auroras!
  */
-function createCmeCloudMaterial(colorHex: string): THREE.ShaderMaterial {
+function createSolarWindParticlesMaterial(): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     uniforms: {
       uTime: { value: 0 },
-      uRadius: { value: 10 },
+      uWaveR: { value: 20 },
+      uStarR: { value: 3.5 },
+      uMaxR: { value: 180 },
       uProgress: { value: 0 },
       uIntensity: { value: 1.2 },
-      uColor: { value: new THREE.Color(colorHex) },
-      uPixelRatio: { value: Math.min(window.devicePixelRatio, 1.5) },
+      uHasTarget: { value: 0 },
+      uTargetPos: { value: new THREE.Vector3() },
+      uEarthR: { value: 1.0 },
+      uBowR: { value: 4.0 },
     },
     vertexShader: /* glsl */ `
-      attribute vec4 aParams;
-      uniform float uTime;
-      uniform float uRadius;
-      uniform float uProgress;
-      uniform float uIntensity;
-      uniform vec3 uColor;
-      uniform float uPixelRatio;
+      attribute vec4 aSwA; // (theta, phi, phase, speed)
+      attribute vec4 aSwB; // (sizeScale, filamentSeed, particleSeed, kind [0=ambient+surge, 1=CME shock wave])
 
-      varying float vAlpha;
-      varying vec3 vCol;
+      uniform float uTime;
+      uniform float uWaveR;
+      uniform float uStarR;
+      uniform float uMaxR;
+      uniform float uProgress;
+
+      varying float vSurge;
+      varying float vBow;
+      varying float vCusp;
+      varying float vFade;
+      varying float vSeed;
+      varying float vKind;
+      varying vec2 vVelDir;
+      ${GLSL_BOW_SHOCK_DEFLECT}
 
       void main() {
-        float seed = aParams.x;
-        float spread = aParams.y;
-        float az = aParams.z;
-        float kind = aParams.w;
+        float theta = aSwA.x;
+        float phi = aSwA.y;
+        float phase = aSwA.z;
+        float speed = aSwA.w;
 
-        vec3 localPos;
-        float ptSize;
+        float sizeScale = aSwB.x;
+        float filSeed = aSwB.y;
+        float pSeed = aSwB.z;
+        float kind = aSwB.w;
 
-        if (kind < 0.5) {
-          // Leading tenuous shockfront micro-sparks
-          float coneAng = pow(spread, 0.72) * 0.58;
-          float rShell = uRadius * (0.88 + 0.14 * seed);
-          localPos = vec3(
-            sin(coneAng) * cos(az) * 1.15,
-            sin(coneAng) * sin(az) * 0.85,
-            cos(coneAng)
-          ) * rShell;
-          vCol = vec3(1.35, 1.05, 0.65);
-          vAlpha = smoothstep(0.58, 0.12, coneAng) * 0.24 * uIntensity;
-          ptSize = 1.4 + 1.8 * seed;
+        vSeed = pSeed;
+        vKind = kind;
+
+        float rMin = uStarR * 1.15;
+        float spanR = max(12.0, uMaxR * 1.24 - rMin);
+        float r;
+        float surge;
+
+        float frontReachMask = 1.0;
+        if (kind > 0.5) {
+          // CME Shockwave Fluid River: strictly expands OUTWARD from rMin (Sun surface) behind uWaveR!
+          float maxBand = max(uStarR * 3.8, uMaxR * 0.28);
+          float bandWidth = min(maxBand, max(uStarR * 1.4, (uWaveR - rMin) * 0.92));
+          float localCycle = fract(phase + uTime * (0.24 * speed));
+          // Organic front-skewed distribution strictly trailing uWaveR (0 -> leading crest, never spawns ahead of wave!)
+          float rel = (1.0 - pow(1.0 - localCycle, 1.45) - 0.96) * bandWidth;
+          float crestRipple =
+            sin(phi * 3.0 + filSeed * 6.283 - uTime * 1.6) * (bandWidth * 0.12) +
+            cos(theta * 9.0 - phi * 2.0 + uTime * 1.2) * (bandWidth * 0.08);
+          r = uWaveR + rel + crestRipple;
+          float crestDist = (r - (uWaveR - bandWidth * 0.28)) / max(uStarR, bandWidth * 0.48);
+          surge = exp(-crestDist * crestDist);
+          frontReachMask = smoothstep(rMin, rMin + uStarR * 0.8, r);
         } else {
-          // Delicate plasma motes spiraling along the braided magnetic flux-rope loops
-          float s = fract(seed + uTime * 0.06);
-          float archAng = (s - 0.5) * 3.14159;
-          float loopR = uRadius * (kind > 1.5 ? 0.62 : 0.84);
-          vec3 spine = vec3(
-            sin(archAng) * loopR * 0.62,
-            sin(archAng * 2.0 + uTime * 0.25) * loopR * 0.16,
-            cos(archAng) * loopR * 0.96
-          );
-          float twistAng = s * 16.0 + az + uTime * 0.9;
-          float tubeR = uRadius * (0.04 + 0.09 * cos(archAng)) * spread;
-          vec3 tang = normalize(vec3(cos(archAng) * 0.62, 0.0, -sin(archAng) * 0.96) + vec3(1e-4));
-          vec3 sideV = normalize(cross(vec3(0.0, 1.0, 0.0), tang));
-          vec3 normV = cross(tang, sideV);
-          localPos = spine + (sideV * cos(twistAng) + normV * sin(twistAng)) * tubeR;
-
-          vCol = mix(uColor * 1.2, vec3(1.42, 0.96, 0.52), 0.5 + 0.5 * cos(archAng));
-          vAlpha = (0.18 + 0.26 * cos(archAng)) * uIntensity;
-          ptSize = 1.3 + 1.9 * spread;
+          // Continuous Ambient Solar Wind: emerges strictly behind/near the advancing outward CME wave!
+          float cycle = fract(phase + uTime * (0.14 * speed));
+          r = rMin + cycle * spanR;
+          float distToFront = abs(r - uWaveR);
+          float shockWidth = max(uStarR * 3.5, uMaxR * 0.18);
+          surge = exp(-pow(distToFront / shockWidth, 2.0));
+          // Smoothly reveal particles ONLY as the outward CME front reaches that distance from the Sun!
+          frontReachMask = smoothstep(uWaveR + max(uStarR * 2.5, uMaxR * 0.06), uWaveR - max(uStarR * 1.5, uMaxR * 0.04), r);
         }
 
-        float distFade = smoothstep(0.0, 0.04, uProgress) * pow(1.0 - clamp(uProgress, 0.0, 1.0), 0.95);
-        vAlpha *= distFade;
+        // Subtle Parker-spiral lag + coherent 3D fluid curl eddies shared per filament!
+        float rNorm = r / max(1.0, uMaxR);
+        float parkerLag = rNorm * 0.22;
+        float eddyPhase = rNorm * 7.5 - uTime * 1.85 + filSeed * 6.283;
+        float eddyT = sin(eddyPhase) * 0.036 * (0.35 + surge);
+        float eddyP = cos(eddyPhase * 1.3 + filSeed * 9.1) * 0.055 * (0.35 + surge);
 
-        vec4 mvPos = modelViewMatrix * vec4(localPos, 1.0);
-        float camDist = max(1.0, -mvPos.z);
-        float persp = clamp(150.0 / camDist, 0.65, 1.8);
-        gl_PointSize = clamp(ptSize * persp * uPixelRatio, 1.3, 4.4);
-        gl_Position = projectionMatrix * mvPos;
-      }
-    `,
-    fragmentShader: /* glsl */ `
-      varying float vAlpha;
-      varying vec3 vCol;
-      void main() {
-        vec2 uv = gl_PointCoord - 0.5;
-        float d2 = dot(uv, uv) * 4.0;
-        if (d2 > 1.0) discard;
-        float falloff = exp(-d2 * 5.2) * (1.0 - d2);
-        float a = falloff * vAlpha;
-        if (a < 0.002) discard;
-        gl_FragColor = vec4(vCol, a);
-      }
-    `,
-    transparent: true,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-  });
-}
+        float tAngle = max(0.0, theta + eddyT);
+        float az = phi - parkerLag + eddyP;
+        float sinT = sin(tAngle);
+        vec3 dir = normalize(vec3(sinT * cos(az), sinT * sin(az) * 0.76, cos(tAngle)));
+        vec3 localPos = dir * max(rMin * 0.94, r);
 
-/**
- * Gossamer Helical Coronal Magnetic Flux-Rope Arch Ribbon (7 staggered braided arches erupting from the Sun):
- * Forms a genuine billowing, wispy NASA SOHO/STEREO three-part coronal mass ejection (leading veil,
- * dark magnetic cavity, and inner erupting prominence strands) with ZERO hard dome & ZERO snowballs!
- */
-function createCmeFluxLoopMaterial(
-  phaseOffset: number,
-  tiltAngle: number,
-  depthScale: number,
-  spanScale: number,
-  widthScale: number,
-  alphaScale: number
-): THREE.ShaderMaterial {
-  return new THREE.ShaderMaterial({
-    uniforms: {
-      uTime: { value: 0 },
-      uRadius: { value: 10 },
-      uProgress: { value: 0 },
-      uIntensity: { value: 1.2 },
-      uPhase: { value: phaseOffset },
-      uTilt: { value: tiltAngle },
-      uDepthScale: { value: depthScale },
-      uSpanScale: { value: spanScale },
-      uWidthScale: { value: widthScale },
-      uAlphaScale: { value: alphaScale },
-    },
-    vertexShader: /* glsl */ `
-      uniform float uTime;
-      uniform float uRadius;
-      uniform float uPhase;
-      uniform float uTilt;
-      uniform float uDepthScale;
-      uniform float uSpanScale;
-      uniform float uWidthScale;
+        // Real C-infinity parabolic bow-shock deflection around Earth's magnetosphere!
+        float bowCompress = 0.0;
+        float cuspGlow = 0.0;
+        vec3 finalPos = deflectAroundMagnetosphere(localPos, pSeed, true, bowCompress, cuspGlow);
 
-      varying float vAlong;
-      varying float vAcross;
+        // Compute screen-space velocity direction so each tiny micro-spark softly elongates along its true curved flight path!
+        float bAhead = 0.0;
+        float cAhead = 0.0;
+        vec3 aheadPos = deflectAroundMagnetosphere(localPos + dir * max(0.8, uBowR * 0.35), pSeed, true, bAhead, cAhead);
+        vec4 mvPos = modelViewMatrix * vec4(finalPos, 1.0);
+        vec4 clip0 = projectionMatrix * mvPos;
+        vec4 clip1 = projectionMatrix * (modelViewMatrix * vec4(aheadPos, 1.0));
+        vec2 sDir = (clip1.xy / max(0.001, clip1.w)) - (clip0.xy / max(0.001, clip0.w));
+        float sLen = length(sDir);
+        vec2 vel2 = sLen > 0.0001 ? (sDir / sLen) : vec2(1.0, 0.0);
+        vVelDir = vec2(vel2.x, -vel2.y); // flip Y to match gl_PointCoord top-down orientation
 
-      vec3 evalFluxArch(float s) {
-        // Staggered croissant-shaped magnetic flux rope anchored back near the Sun, expanding outward along +Z
-        float a = (s - 0.5) * 3.14159;
-        float span = uRadius * uSpanScale;
-        float depth = uRadius * uDepthScale;
-        // Organic helical writhe (smoothly offset per loop so arches NEVER pinch into a single vertex!)
-        float helix = sin(s * 9.0 - uTime * 1.1 + uPhase) * uRadius * 0.036 * cos(a);
-        float offY = sin(uPhase * 1.7) * uRadius * 0.09 * cos(a);
-        float x0 = sin(a) * span;
-        float y0 = helix + offY + sin(a * 2.0 + uPhase) * uRadius * 0.065;
-        float z0 = max(0.0, cos(a)) * depth;
+        vSurge = surge;
+        vBow = bowCompress;
+        vCusp = cuspGlow;
 
-        float ct = cos(uTilt);
-        float st = sin(uTilt);
-        return vec3(x0 * ct - y0 * st, x0 * st + y0 * ct, z0);
-      }
+        float startFade = smoothstep(rMin, rMin + uStarR * 2.0, r);
+        float endFade = smoothstep(uMaxR * 1.24, uMaxR * 0.86, r);
+        float lifeFade = smoothstep(0.0, 0.03, uProgress) * smoothstep(1.0, 0.74, uProgress);
+        float coneEdge = exp(-theta * theta * 4.6) * smoothstep(0.84, 0.40, theta);
+        vFade = startFade * endFade * lifeFade * coneEdge * frontReachMask;
 
-      void main() {
-        float s = uv.y;
-        float side = uv.x * 2.0 - 1.0;
-        vAlong = s;
-        vAcross = side;
+        gl_Position = clip0;
 
-        vec3 pLocal = evalFluxArch(s);
-        vec3 pNext = evalFluxArch(min(s + 0.02, 1.0));
-        vec3 pPrev = evalFluxArch(max(s - 0.02, 0.0));
-
-        // Smooth camera-independent radial width axis inside the erupting coronal loop plane:
-        // NEVER flips 180° when the arch tangent points toward the camera (eliminates bowtie fold/pinch!)
-        vec3 tangLocal = normalize(pNext - pPrev + vec3(1e-5));
-        vec3 radialLocal = normalize(pLocal + vec3(0.0, 0.0, uRadius * 0.15));
-        vec3 sideLocal = radialLocal - tangLocal * dot(radialLocal, tangLocal);
-        float sl = length(sideLocal);
-        sideLocal = sl > 0.001 ? sideLocal / sl : vec3(0.0, 0.0, 1.0);
-
-        // Wide billowing silky apex, slender wispy solar anchor legs
-        float apex = pow(sin(s * 3.14159), 0.78);
-        float halfW = uRadius * uWidthScale * (0.042 + 0.135 * apex);
-        vec3 finalLocal = pLocal + sideLocal * (side * halfW);
-        vec3 worldPos = (modelMatrix * vec4(finalLocal, 1.0)).xyz;
-        gl_Position = projectionMatrix * viewMatrix * vec4(worldPos, 1.0);
+        // Strictly micro-scale jewel-like velocity-elongated sparks (2.2px - 6.0px max -> zero wireframes, zero cotton balls!)
+        float basePt = (1.85 + 1.65 * surge + 1.35 * bowCompress + 1.15 * cuspGlow) * sizeScale;
+        gl_PointSize = clamp(basePt * (170.0 / max(18.0, -mvPos.z)), 2.2, 6.2);
       }
     `,
     fragmentShader: /* glsl */ `
       uniform float uTime;
-      uniform float uProgress;
       uniform float uIntensity;
-      uniform float uPhase;
-      uniform float uAlphaScale;
 
-      varying float vAlong;
-      varying float vAcross;
-      ${GLSL_NOISE_HELPERS}
+      varying float vSurge;
+      varying float vBow;
+      varying float vCusp;
+      varying float vFade;
+      varying float vSeed;
+      varying float vKind;
+      varying vec2 vVelDir;
 
       void main() {
-        float s = vAlong;
-        float a = abs(vAcross);
+        if (vFade < 0.004) discard;
+        vec2 p = gl_PointCoord - 0.5;
 
-        float crossFade = exp(-a * a * 4.4) * smoothstep(1.0, 0.48, a);
-        float archFade = pow(sin(s * 3.14159), 1.25);
+        // Softly elongate each anti-aliased micro-spark (~2.6:1 teardrop) along its true 3D curved flight velocity!
+        vec2 fwd = vVelDir;
+        vec2 side = vec2(-fwd.y, fwd.x);
+        float along = dot(p, fwd);
+        float across = dot(p, side);
+        float stretch = mix(1.75, 2.85, clamp(vSurge + vBow * 0.5, 0.0, 1.0));
+        float d2 = (along * along) * 1.15 + (across * across) * (stretch * stretch);
+        if (d2 > 0.25) discard;
 
-        // Multi-scale silky coronal plasma filaments (100% smooth procedural, zero snowballs!)
-        float f1 = hFbm2(vec2(vAcross * 2.6, s * 6.0 - uTime * 0.48 + uPhase));
-        float f2 = hFbm2(vec2(vAcross * 5.2 + f1 * 1.1, s * 11.0 - uTime * 0.78));
-        float strand = pow(clamp(1.0 - abs(f1 * 2.0 - 1.0), 0.0, 1.0), 2.1);
-        float distFade = smoothstep(0.0, 0.045, uProgress) * pow(1.0 - clamp(uProgress, 0.0, 1.0), 1.05);
+        // Bright leading ion head tapering smoothly into a wispy sub-pixel motion tail (instantly distinct from static stars!)
+        float headBias = smoothstep(-0.46, 0.24, along);
+        float core = exp(-d2 * 44.0) * (0.55 + 0.55 * headBias);
+        float halo = exp(-d2 * 13.0) * 0.44;
+        float shape = (core + halo) * smoothstep(0.25, 0.13, d2);
 
-        // Authentic NASA SOHO/STEREO coronal hue: warm amber-crimson inner filament -> gossamer pale-gold shock veil
-        vec3 deepAmber = vec3(1.18, 0.46, 0.14);
-        vec3 solarGold = vec3(1.36, 0.88, 0.42);
-        vec3 paleVeil = vec3(1.35, 1.22, 0.92);
-        vec3 col = mix(deepAmber, solarGold, 0.35 + 0.65 * f2);
-        col = mix(col, paleVeil, strand * 0.55);
+        // Gentle scintillation so the stardust river feels alive and shimmering
+        float twinkle = 0.78 + 0.22 * sin(uTime * 5.5 + vSeed * 43.7);
 
-        float alpha = clamp(crossFade * archFade * (0.34 + 0.72 * strand + 0.28 * f2) * distFade * uIntensity * uAlphaScale, 0.0, 0.42);
-        if (alpha < 0.002) discard;
+        // NASA SVS fluid ion palette:
+        // Ambient wind: subtle cool silver-champagne glints
+        // CME shockwave river: rich solar amber -> incandescent pale-gold stardust core
+        // Bow-shock compression & polar cusps: shimmering electric cyan-white & emerald auroral funnel!
+        vec3 ambientCol = vec3(0.76, 0.82, 0.96);
+        vec3 amberIon = vec3(1.48, 0.82, 0.30);
+        vec3 goldSpark = vec3(1.92, 1.62, 1.15);
+        vec3 bowCyan = vec3(0.58, 1.28, 1.98);
+        vec3 cuspEmerald = vec3(0.45, 1.62, 1.25);
+
+        vec3 surgeCol = mix(amberIon, goldSpark, clamp(core * 0.8 + vSeed * 0.35, 0.0, 1.0));
+        vec3 col = mix(ambientCol, surgeCol, clamp(vSurge * 1.25, 0.0, 1.0));
+        col = mix(col, bowCyan, clamp(vBow * 1.35, 0.0, 1.0));
+        col = mix(col, cuspEmerald, clamp(vCusp * 1.35, 0.0, 1.0));
+
+        float baseAlpha = vKind > 0.5
+          ? (0.78 * vSurge)
+          : (0.16 + 0.58 * vSurge);
+        float bowBoost = 1.0 + vBow * 2.0 + vCusp * 1.85;
+        float alpha = clamp(shape * baseAlpha * bowBoost * twinkle * vFade * uIntensity, 0.0, 0.94);
+        if (alpha < 0.005) discard;
+
         gl_FragColor = vec4(col, alpha);
       }
     `,
     transparent: true,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
-    side: THREE.DoubleSide,
   });
 }
 
@@ -830,8 +933,9 @@ function createBlazarJetMaterial(sign: 1 | -1): THREE.ShaderMaterial {
 
 interface CmeVisual {
   group: THREE.Group;
-  cloud: THREE.Points;
-  loops: THREE.Mesh[];
+  solarWindParticles: THREE.Points;
+  eruptProminenceGroup: THREE.Group;
+  eruptProminenceMats: THREE.ShaderMaterial[];
 }
 
 interface StreamVisual {
@@ -858,7 +962,8 @@ export class HighEnergyRenderer {
   private tempBend = new THREE.Vector3();
   private tempRight = new THREE.Vector3();
   private tempUp = new THREE.Vector3();
-  private tempZ = new THREE.Vector3(0, 0, 1);
+  private tempTargetLocal = new THREE.Vector3();
+  private tempInvQuat = new THREE.Quaternion();
   private tempBasisMat = new THREE.Matrix4();
 
   constructor(scene: THREE.Scene) {
@@ -871,60 +976,69 @@ export class HighEnergyRenderer {
     tidalStreams: TidalStreamLink[],
     bodyRenderer: BodyRenderer,
     originMeters: Vec3,
-    elapsedTime: number
+    elapsedTime: number,
+    _camera?: THREE.PerspectiveCamera,
+    showSpaceWeatherField = true
   ): void {
-    this.syncCmes(cmeWaves, originMeters, elapsedTime);
-    this.syncMagnetospheres(bodies, bodyRenderer, elapsedTime);
+    this.syncCmes(bodies, cmeWaves, bodyRenderer, originMeters, elapsedTime, showSpaceWeatherField);
+    this.syncMagnetospheres(bodies, bodyRenderer, elapsedTime, showSpaceWeatherField);
     this.syncTidalStreams(bodies, tidalStreams, bodyRenderer, elapsedTime);
     this.syncBlazarJets(bodies, bodyRenderer, elapsedTime);
   }
 
-  private syncCmes(cmeWaves: CmeWave[], originMeters: Vec3, elapsedTime: number): void {
+  private syncCmes(
+    bodies: CelestialBody[],
+    cmeWaves: CmeWave[],
+    bodyRenderer: BodyRenderer,
+    originMeters: Vec3,
+    elapsedTime: number,
+    showSpaceWeatherField = true
+  ): void {
     const aliveIds = new Set<string>();
     for (const wave of cmeWaves) {
       aliveIds.add(wave.id);
       let vis = this.cmeMap.get(wave.id);
       if (!vis) {
         const group = new THREE.Group();
-        const cloud = new THREE.Points(SHARED_CME_CLOUD_GEO, createCmeCloudMaterial(wave.color));
-        cloud.frustumCulled = false;
-        cloud.renderOrder = 4;
-        group.add(cloud);
 
-        // 7 staggered silky coronal flux-rope & leading shock-veil arches (zero vertex pinch, zero snowballs!)
-        const loopConfigs = [
-          // Broad tenuous leading shock veil arches
-          { phase: 0.2, tilt: 0.04, depth: 1.00, span: 0.74, width: 1.65, alpha: 0.14 },
-          { phase: 1.8, tilt: 0.52, depth: 0.96, span: 0.68, width: 1.45, alpha: 0.13 },
-          { phase: 3.4, tilt: -0.48, depth: 0.94, span: 0.66, width: 1.40, alpha: 0.13 },
-          // Crisp braided helical flux-rope loops
-          { phase: 0.9, tilt: 0.22, depth: 0.84, span: 0.58, width: 0.92, alpha: 0.22 },
-          { phase: 2.7, tilt: -0.26, depth: 0.80, span: 0.54, width: 0.88, alpha: 0.20 },
-          // Inner erupting coronal prominence filament arches behind the dark cavity
-          { phase: 4.5, tilt: 0.14, depth: 0.62, span: 0.44, width: 0.76, alpha: 0.19 },
-          { phase: 5.6, tilt: -0.34, depth: 0.56, span: 0.40, width: 0.70, alpha: 0.17 },
-        ];
-        const loops: THREE.Mesh[] = [];
-        for (const cfg of loopConfigs) {
-          const loopMesh = new THREE.Mesh(
-            SHARED_CME_LOOP_GEO,
-            createCmeFluxLoopMaterial(
-              cfg.phase,
-              cfg.tilt,
-              cfg.depth,
-              cfg.span,
-              cfg.width,
-              cfg.alpha
-            )
-          );
-          loopMesh.frustumCulled = false;
-          loopMesh.renderOrder = 4;
-          group.add(loopMesh);
-          loops.push(loopMesh);
+        // A. NASA SVS 2,400 fluid-advected micro-particle solar wind & CME ion river (bow-shock deflected!)
+        const solarWindParticles = new THREE.Points(
+          SHARED_SOLAR_WIND_PARTICLES_GEO,
+          createSolarWindParticlesMaterial()
+        );
+        solarWindParticles.frustumCulled = false;
+        solarWindParticles.renderOrder = 4;
+        group.add(solarWindParticles);
+
+        // B. Dedicated 3D Crossed Shredded NASA SDO 304Å Eruptive Prominence Plume right at the CME launch site!
+        //    (Replaces flat round flare stickers & dotty sparks with genuine billowing molten solar plasma!)
+        const eruptProminenceGroup = new THREE.Group();
+        // Rotate local +Y (prominence arch radial axis) straight onto +Z (wave.direction)
+        eruptProminenceGroup.rotation.x = Math.PI / 2;
+        const sunTex = textureAtlas.get()?.sun;
+        const seedBase = Math.random() * 90 + 10;
+        const eruptProminenceMats: THREE.ShaderMaterial[] = [];
+        if (sunTex) {
+          const variants = [
+            { variant: 1, rotY: 0.22, scaleX: 1.05, scaleY: 1.12 },
+            { variant: 2, rotY: 1.62, scaleX: 0.96, scaleY: 1.04 },
+          ];
+          for (let k = 0; k < variants.length; k++) {
+            const v = variants[k];
+            const pMat = createProminenceMaterial('#ff5518', sunTex, seedBase + k * 37.3, v.variant);
+            pMat.uniforms.uIsEruptive.value = 1.0;
+            const mesh = new THREE.Mesh(SHARED_PROMINENCE_GEO, pMat);
+            mesh.rotation.y = v.rotY;
+            mesh.scale.set(v.scaleX, v.scaleY, 1.0);
+            mesh.renderOrder = 2;
+            eruptProminenceGroup.add(mesh);
+            eruptProminenceMats.push(pMat);
+          }
         }
+        group.add(eruptProminenceGroup);
 
         this.scene.add(group);
-        vis = { group, cloud, loops };
+        vis = { group, solarWindParticles, eruptProminenceGroup, eruptProminenceMats };
         this.cmeMap.set(wave.id, vis);
       }
 
@@ -935,33 +1049,95 @@ export class HighEnergyRenderer {
       );
       this.tempDir.set(wave.direction.x, wave.direction.y, wave.direction.z).normalize();
 
-      const radiusScene = Math.max(1.0, wave.radiusMeters * METERS_TO_SCENE);
-      const progress = Math.min(1, wave.radiusMeters / wave.maxRadiusMeters);
+      // Orient group with +Z along CME direction & +Y aligned with ecliptic North so polar cusps match Earth's poles!
+      this.tempUp.set(0, 1, 0);
+      this.tempRight.crossVectors(this.tempUp, this.tempDir);
+      if (this.tempRight.lengthSq() < 1e-4) {
+        this.tempRight.set(1, 0, 0);
+      } else {
+        this.tempRight.normalize();
+      }
+      this.tempUp.crossVectors(this.tempDir, this.tempRight).normalize();
+      this.tempBasisMat.makeBasis(this.tempRight, this.tempUp, this.tempDir);
 
       vis.group.position.copy(this.tempOrigin);
-      vis.group.quaternion.setFromUnitVectors(this.tempZ, this.tempDir);
+      vis.group.quaternion.setFromRotationMatrix(this.tempBasisMat);
+      vis.group.scale.setScalar(1);
 
-      const cMat = vis.cloud.material as THREE.ShaderMaterial;
-      cMat.uniforms.uTime.value = elapsedTime;
-      cMat.uniforms.uRadius.value = radiusScene;
-      cMat.uniforms.uProgress.value = progress;
-      cMat.uniforms.uIntensity.value = wave.intensity;
+      const starVis = bodyRenderer.getVisual(wave.starId);
+      const starR = starVis ? starVis.renderedRadius : 3.5;
+      const waveR = Math.max(starR * 1.25, wave.radiusMeters * METERS_TO_SCENE);
+      const maxR = Math.max(starR * 8.0, wave.maxRadiusMeters * METERS_TO_SCENE);
+      const progress = Math.min(1, wave.radiusMeters / wave.maxRadiusMeters);
 
-      for (const loop of vis.loops) {
-        const lMat = loop.material as THREE.ShaderMaterial;
-        lMat.uniforms.uTime.value = elapsedTime;
-        lMat.uniforms.uRadius.value = radiusScene;
-        lMat.uniforms.uProgress.value = progress;
-        lMat.uniforms.uIntensity.value = wave.intensity;
+      // Locate primary magnetized target planet inside the CME cone for live bow-shock streamline deflection!
+      let hasTarget = 0;
+      let targetEarthR = 1.0;
+      let targetBowR = 4.0;
+      let bestScore = Infinity;
+      this.tempTargetLocal.set(0, 0, maxR * 2.0);
+      this.tempInvQuat.copy(vis.group.quaternion).invert();
+
+      for (const b of bodies) {
+        if (!b.alive || b.id === wave.starId || b.category === 'star' || b.category === 'black_hole') continue;
+        const bVis = bodyRenderer.getVisual(b.id);
+        if (!bVis) continue;
+        this.tempAxis.subVectors(bVis.renderedPos, this.tempOrigin);
+        const dist = this.tempAxis.length();
+        if (dist < starR * 2.0 || dist > maxR * 1.25) continue;
+        const align = this.tempAxis.dot(this.tempDir) / dist;
+        if (align < 0.65) continue;
+        // Prefer planets with atmospheres (e.g. Earth) over small moons
+        const score = dist * (b.atmosphereDensity > 0.05 ? 0.35 : 1.0);
+        if (score < bestScore) {
+          bestScore = score;
+          hasTarget = 1;
+          this.tempTargetLocal.copy(this.tempAxis).applyQuaternion(this.tempInvQuat);
+          targetEarthR = bVis.renderedRadius;
+          targetBowR = Math.max(bVis.renderedRadius * 4.85, 3.6);
+        }
+      }
+
+      // 1. Update NASA SVS fluid micro-particle solar wind river (hidden in Pure Naked-Eye Mode!)
+      vis.solarWindParticles.visible = showSpaceWeatherField;
+      if (showSpaceWeatherField) {
+        const sMat = vis.solarWindParticles.material as THREE.ShaderMaterial;
+        sMat.uniforms.uTime.value = elapsedTime;
+        sMat.uniforms.uWaveR.value = waveR;
+        sMat.uniforms.uStarR.value = starR;
+        sMat.uniforms.uMaxR.value = maxR;
+        sMat.uniforms.uProgress.value = progress;
+        sMat.uniforms.uIntensity.value = wave.intensity;
+        sMat.uniforms.uHasTarget.value = hasTarget;
+        sMat.uniforms.uTargetPos.value.copy(this.tempTargetLocal);
+        sMat.uniforms.uEarthR.value = targetEarthR;
+        sMat.uniforms.uBowR.value = targetBowR;
+      }
+
+      // 2. Update 3D shredded NASA SDO 304Å eruptive prominence plume at the exact CME launch site!
+      // Silky cubic zero-slope release tail ensures 100% seamless dissipation with ZERO end-of-eruption snap!
+      const eruptAge = Math.min(1, progress / 0.42);
+      const rem = Math.max(0, 1 - eruptAge);
+      const eruptPower = rem * rem * (3 - 2 * rem) * wave.intensity;
+      vis.eruptProminenceGroup.visible = eruptAge < 0.99;
+      if (vis.eruptProminenceGroup.visible) {
+        vis.eruptProminenceGroup.scale.setScalar(starR);
+        for (const pMat of vis.eruptProminenceMats) {
+          pMat.uniforms.uTime.value = elapsedTime;
+          pMat.uniforms.uStarWorldPos.value.copy(this.tempOrigin);
+          pMat.uniforms.uSurgePower.value = eruptPower;
+          pMat.uniforms.uSurgeAge.value = eruptAge;
+          pMat.uniforms.uFlareDirWorld.value.copy(this.tempDir);
+        }
       }
     }
 
     for (const [id, vis] of this.cmeMap.entries()) {
       if (!aliveIds.has(id)) {
         this.scene.remove(vis.group);
-        (vis.cloud.material as THREE.Material).dispose();
-        for (const loop of vis.loops) {
-          (loop.material as THREE.Material).dispose();
+        (vis.solarWindParticles.material as THREE.Material).dispose();
+        for (const pMat of vis.eruptProminenceMats) {
+          pMat.dispose();
         }
         this.cmeMap.delete(id);
       }
@@ -971,7 +1147,8 @@ export class HighEnergyRenderer {
   private syncMagnetospheres(
     bodies: CelestialBody[],
     bodyRenderer: BodyRenderer,
-    elapsedTime: number
+    elapsedTime: number,
+    showSpaceWeatherField = true
   ): void {
     const stars = bodies.filter((b) => b.alive && b.category === 'star');
     const aliveIds = new Set<string>();
@@ -992,6 +1169,9 @@ export class HighEnergyRenderer {
         this.scene.add(lines);
         this.magnetoMap.set(b.id, lines);
       }
+
+      lines.visible = showSpaceWeatherField;
+      if (!showSpaceWeatherField) continue;
 
       // Build exact geomagnetic dipole + solar-wind basis:
       // +Z = sunward (compressed dayside loops), +Y = planet's North magnetic pole, -Z = stretched magnetotail!
@@ -1209,9 +1389,9 @@ export class HighEnergyRenderer {
   public disposeAll(): void {
     for (const vis of this.cmeMap.values()) {
       this.scene.remove(vis.group);
-      (vis.cloud.material as THREE.Material).dispose();
-      for (const loop of vis.loops) {
-        (loop.material as THREE.Material).dispose();
+      (vis.solarWindParticles.material as THREE.Material).dispose();
+      for (const pMat of vis.eruptProminenceMats) {
+        pMat.dispose();
       }
     }
     this.cmeMap.clear();

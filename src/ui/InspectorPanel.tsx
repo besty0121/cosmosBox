@@ -606,21 +606,35 @@ export function InspectorPanel() {
           <div className="control-section">
             <div className="section-title">恒星高能与演化实验</div>
             {!body.isWhiteDwarf && (
-              <button
-                className="hud-btn"
-                style={{
-                  width: '100%',
-                  justifyContent: 'center',
-                  marginBottom: 8,
-                  borderColor: 'rgba(255, 168, 66, 0.55)',
-                  color: '#ffbe6b',
-                }}
-                onClick={() => launchSolarCME(body.id)}
-                title="向行星方向抛射超强日冕物质抛射 (CME) 磁云，撞击地球后点亮弓形磁盾并引爆 G5 级极光"
-              >
-                <Sparkles size={14} />
-                发射超级太阳风暴 (CME)
-              </button>
+              <div className="btn-row" style={{ marginBottom: 8 }}>
+                <button
+                  className="hud-btn"
+                  style={{
+                    flex: 1,
+                    justifyContent: 'center',
+                    borderColor: 'rgba(255, 168, 66, 0.55)',
+                    color: '#ffbe6b',
+                  }}
+                  onClick={() => launchSolarCME(body.id, 'random')}
+                  title="在太阳 ±34° 黑子活跃带随机经纬度触发日冕爆发（CME），同步掀起太阳海啸波纹与日珥喷涌"
+                >
+                  <Sparkles size={13} />
+                  随机日冕爆发
+                </button>
+                <button
+                  className="hud-btn"
+                  style={{
+                    flex: 1,
+                    justifyContent: 'center',
+                    borderColor: 'rgba(102, 200, 255, 0.48)',
+                    color: '#88d6ff',
+                  }}
+                  onClick={() => launchSolarCME(body.id, 'target')}
+                  title="朝地球/行星方向定向触发超级太阳风暴，实时观测地球磁层偏转与 G5 极光大爆发"
+                >
+                  定向冲击地球
+                </button>
+              </div>
             )}
             <button
               className="hud-btn supernova-btn"

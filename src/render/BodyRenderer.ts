@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { AU, L_SUN, METERS_TO_SCENE, R_EARTH, R_SUN } from '../physics/constants';
-import { CelestialBody, ScaleMode, Vec3 } from '../types/cosmos';
+import { CelestialBody, CmeWave, ScaleMode, Vec3 } from '../types/cosmos';
 import {
   createAtmosphereMaterial,
   createBlackHoleLensingMaterial,
@@ -103,11 +103,18 @@ function buildProminenceCurtainGeometry(): THREE.BufferGeometry {
   geo.computeVertexNormals();
   return geo;
 }
-const SHARED_PROMINENCE_GEO = buildProminenceCurtainGeometry();
+export const SHARED_PROMINENCE_GEO = buildProminenceCurtainGeometry();
 
 // Single lightweight outer bounding sphere for true single-pass 3D volumetric raymarched Earth aurora!
 // Eliminates all shell slicing, plastic ribbon edges, and overdraw — raymarches real 90-450km thermosphere volume.
 const SHARED_EARTH_AURORA_GEO = new THREE.SphereGeometry(1.09, 48, 36);
+
+interface ProminenceSlot {
+  mesh: THREE.Mesh;
+  bornAt: number;
+  duration: number;
+  cooldown: number;
+}
 
 export interface BodyVisual {
   bodyId: string;
@@ -122,6 +129,11 @@ export interface BodyVisual {
   ringMesh?: THREE.Mesh;
   coronaMesh?: THREE.Mesh;
   prominenceGroup?: THREE.Group;
+  prominenceSlots?: ProminenceSlot[];
+  smoothFlarePower?: number;
+  flareScrollAccum?: number;
+  lastFlareDirWorld?: THREE.Vector3;
+  lastFlareAge?: number;
   blackHoleVolume?: THREE.Mesh;
   pulsarJets?: THREE.Group;
   cometComa?: THREE.Mesh;
@@ -174,6 +186,7 @@ export class BodyRenderer {
   private tempNormal = new THREE.Vector3();
   private tempOffset = new THREE.Vector3();
   private tempColor = new THREE.Color();
+  private lastElapsedTime = 0;
   private tempAntiSolar = new THREE.Vector3();
   private tempAntiVel = new THREE.Vector3();
   private tempTailTarget = new THREE.Vector3();
@@ -220,9 +233,12 @@ export class BodyRenderer {
     scaleMode: ScaleMode,
     showTrails: boolean,
     selectedId: string | null,
-    elapsedTime: number
+    elapsedTime: number,
+    cmeWaves: CmeWave[] = []
   ): void {
     const aliveIds = new Set<string>();
+    const syncDt = Math.min(0.05, Math.max(0, elapsedTime - this.lastElapsedTime));
+    this.lastElapsedTime = elapsedTime;
     this.bodyLookup.clear();
 
     let starCount = 0;
@@ -439,6 +455,48 @@ export class BodyRenderer {
         syncStarLights(rMat);
       }
 
+      // Compute freshest active CME eruption state on this star with C2-smooth cubic fade-out
+      // and strictly monotonic cumulative scroll (ZERO abrupt A->B 1-frame snap when an eruption finishes!)
+      let targetFlarePower = 0;
+      let targetFlareAge = vis.lastFlareAge ?? 1.0;
+      const flareDirWorld = vis.lastFlareDirWorld ?? this.tempAntiSolar.set(1, 0, 0);
+      if (body.category === 'star' && cmeWaves.length > 0) {
+        let freshestProg = 1.0;
+        let freshestWave: CmeWave | null = null;
+        for (const w of cmeWaves) {
+          if (w.starId !== body.id) continue;
+          const prog = Math.min(1, w.radiusMeters / w.maxRadiusMeters);
+          if (prog < 0.48 && prog < freshestProg) {
+            freshestProg = prog;
+            freshestWave = w;
+          }
+        }
+        if (freshestWave) {
+          targetFlareAge = Math.min(1, freshestProg / 0.46);
+          // Silky C2 ease-in + cubic zero-slope ease-out tail (eliminates vertical cliff drop!)
+          const attack = Math.min(1, targetFlareAge / 0.06);
+          const rem = Math.max(0, 1 - targetFlareAge);
+          const smoothRelease = rem * rem * (3 - 2 * rem) * rem;
+          targetFlarePower = attack * smoothRelease * freshestWave.intensity;
+          if (!vis.lastFlareDirWorld) vis.lastFlareDirWorld = new THREE.Vector3(1, 0, 0);
+          vis.lastFlareDirWorld
+            .set(freshestWave.direction.x, freshestWave.direction.y, freshestWave.direction.z)
+            .normalize();
+        }
+      }
+
+      const prevPower = vis.smoothFlarePower ?? 0;
+      const chaseRate = targetFlarePower > prevPower ? 12.0 : 2.8;
+      const starFlarePower = prevPower + (targetFlarePower - prevPower) * Math.min(1, syncDt * chaseRate);
+      vis.smoothFlarePower = starFlarePower < 0.0008 && targetFlarePower === 0 ? 0 : starFlarePower;
+      const starFlareAge = targetFlarePower > 0.0005 ? targetFlareAge : Math.min(1, (vis.lastFlareAge ?? 1) + syncDt * 0.35);
+      vis.lastFlareAge = starFlareAge;
+      const starEruptScroll = (vis.flareScrollAccum ?? 0) + syncDt * vis.smoothFlarePower * 0.42;
+      vis.flareScrollAccum = starEruptScroll;
+      if (vis.lastFlareDirWorld) {
+        flareDirWorld.copy(vis.lastFlareDirWorld);
+      }
+
       if (vis.coronaMesh) {
         const coronaScale = r * (body.category === 'neutron_star' ? 4.4 : 4.8);
         vis.coronaMesh.scale.set(coronaScale, coronaScale, 1);
@@ -446,17 +504,64 @@ export class BodyRenderer {
         const cMat = vis.coronaMesh.material as THREE.ShaderMaterial;
         cMat.uniforms.uTime.value = elapsedTime;
         cMat.uniforms.uColor.value.set(body.atmosphereColor || body.color);
+        if (cMat.uniforms.uFlarePower) {
+          cMat.uniforms.uFlarePower.value = vis.smoothFlarePower;
+          cMat.uniforms.uFlareAge.value = starFlareAge;
+          if (cMat.uniforms.uEruptScroll) cMat.uniforms.uEruptScroll.value = starEruptScroll;
+          if (vis.smoothFlarePower > 0.001) {
+            this.tempInvQuat.copy(camera.quaternion).invert();
+            this.tempTailTarget.copy(flareDirWorld).applyQuaternion(this.tempInvQuat);
+            cMat.uniforms.uFlareDir2D.value.set(this.tempTailTarget.x, this.tempTailTarget.y);
+          }
+        }
       }
 
-      if (vis.prominenceGroup) {
+      if (vis.prominenceGroup && vis.prominenceSlots) {
         vis.prominenceGroup.scale.setScalar(r);
         vis.prominenceGroup.rotation.y = body.rotationAngle * 0.85;
-        vis.prominenceGroup.children.forEach((child) => {
-          const m = (child as THREE.Mesh).material as THREE.ShaderMaterial;
+        for (const slot of vis.prominenceSlots) {
+          const age = elapsedTime - slot.bornAt;
+          const totalCycle = slot.duration + slot.cooldown;
+          if (age >= totalCycle) {
+            // Respawn this solar prominence at a brand-new random 3D active region on the Sun!
+            slot.bornAt = elapsedTime;
+            slot.duration = 9.0 + Math.random() * 9.0;
+            slot.cooldown = 2.0 + Math.random() * 5.5;
+            const az = Math.random() * Math.PI * 2;
+            const hemi = Math.random() < 0.5 ? 1 : -1;
+            const lat = hemi * ((8 + Math.random() * 36) * Math.PI) / 180;
+            const roll = ((Math.random() - 0.5) * 150 * Math.PI) / 180;
+            slot.mesh.rotation.set(lat, az, roll);
+            slot.mesh.scale.set(0.72 + Math.random() * 0.44, 0.78 + Math.random() * 0.42, 1.0);
+            const mat = slot.mesh.material as THREE.ShaderMaterial;
+            if (mat.uniforms?.uSeed) mat.uniforms.uSeed.value = Math.random() * 200;
+            if (mat.uniforms?.uVariant) mat.uniforms.uVariant.value = Math.floor(Math.random() * 3);
+          }
+
+          const liveAge = elapsedTime - slot.bornAt;
+          const life = liveAge / slot.duration;
+          const isActive = liveAge >= 0 && life <= 1.0;
+          slot.mesh.visible = isActive;
+          if (!isActive) continue;
+
+          // Smooth organic birth (0 -> 0.25) -> outward billow -> slow fade out (0.62 -> 1.0)
+          const fadeIn = Math.min(1, life / 0.25);
+          const fadeOut = life > 0.62 ? Math.max(0, (1.0 - life) / 0.38) : 1.0;
+          const smoothIn = fadeIn * fadeIn * (3 - 2 * fadeIn);
+          const smoothOut = fadeOut * fadeOut * (3 - 2 * fadeOut);
+          const lifeAlpha = smoothIn * smoothOut;
+
+          const m = slot.mesh.material as THREE.ShaderMaterial;
           if (m.uniforms?.uTime) m.uniforms.uTime.value = elapsedTime;
           if (m.uniforms?.uColor) m.uniforms.uColor.value.set(body.secondaryColor || '#ff5518');
           if (m.uniforms?.uStarWorldPos) m.uniforms.uStarWorldPos.value.copy(vis.renderedPos);
-        });
+          if (m.uniforms?.uLifeProgress) m.uniforms.uLifeProgress.value = life;
+          if (m.uniforms?.uLifeAlpha) m.uniforms.uLifeAlpha.value = lifeAlpha;
+          if (m.uniforms?.uSurgePower) m.uniforms.uSurgePower.value = vis.smoothFlarePower;
+          if (m.uniforms?.uSurgeAge) m.uniforms.uSurgeAge.value = starFlareAge;
+          if (m.uniforms?.uEruptScroll) m.uniforms.uEruptScroll.value = starEruptScroll;
+          if (m.uniforms?.uFlareDirWorld) m.uniforms.uFlareDirWorld.value.copy(flareDirWorld);
+        }
       }
 
       if (vis.blackHoleVolume) {
@@ -608,6 +713,17 @@ export class BodyRenderer {
         if (u.uBodyWorldPos) u.uBodyWorldPos.value.copy(vis.renderedPos);
         if (u.uBodyRadius) u.uBodyRadius.value = r;
         if (u.uRingNormal) u.uRingNormal.value.copy(this.tempNormal);
+        if (u.uFlarePower) {
+          u.uFlarePower.value = vis.smoothFlarePower ?? 0;
+          u.uFlareAge.value = starFlareAge;
+          if ((vis.smoothFlarePower ?? 0) > 0.001) {
+            // Transform world CME direction into the star's rotated local sphere coordinates!
+            vis.surfaceMesh.updateMatrixWorld(true);
+            this.tempInvQuat.setFromRotationMatrix(vis.surfaceMesh.matrixWorld).invert();
+            this.tempOffset.copy(flareDirWorld).applyQuaternion(this.tempInvQuat).normalize();
+            u.uFlareDirLocal.value.copy(this.tempOffset);
+          }
+        }
         syncStarLights(vis.surfaceMaterial, occCount);
       }
 
@@ -768,28 +884,40 @@ export class BodyRenderer {
       root.add(coronaMesh);
     }
 
-    // Organic asymmetric 3D wispy H-alpha solar prominence curtains (hedgerows, eruptive plumes & torn filaments!)
+    // Organic asymmetric 3D wispy H-alpha solar prominences with randomized spawn -> rise -> fade lifecycles!
     let prominenceGroup: THREE.Group | undefined;
+    let prominenceSlots: ProminenceSlot[] | undefined;
     if (body.category === 'star') {
       prominenceGroup = new THREE.Group();
+      prominenceSlots = [];
       const curtainCount = 6;
       for (let i = 0; i < curtainCount; i++) {
         const variant = i % 3;
         const promMat = createProminenceMaterial(
           body.secondaryColor || '#ff5518',
           this.textures.sun,
-          body.seed + i * 23.4,
+          body.seed + i * 23.4 + Math.random() * 50,
           variant
         );
         const curtain = new THREE.Mesh(SHARED_PROMINENCE_GEO, promMat);
-        const az = ((i * 60 + body.seed * 17) % 360) * (Math.PI / 180);
-        const lat = (((i % 2 === 0 ? 1 : -1) * (16 + (i * 13) % 34)) * Math.PI) / 180;
-        curtain.rotation.set(lat, az, ((i * 53) % 160 - 80) * (Math.PI / 180));
-        const widthScale = 0.78 + ((i * 29) % 7) * 0.06;
-        const heightScale = 0.88 + ((i * 17) % 5) * 0.06;
-        curtain.scale.set(widthScale, heightScale, 1.0);
+        const az = Math.random() * Math.PI * 2;
+        const hemi = i % 2 === 0 ? 1 : -1;
+        const lat = hemi * ((10 + Math.random() * 34) * Math.PI) / 180;
+        curtain.rotation.set(lat, az, ((Math.random() - 0.5) * 140 * Math.PI) / 180);
+        curtain.scale.set(0.76 + Math.random() * 0.36, 0.80 + Math.random() * 0.36, 1.0);
         curtain.renderOrder = 1;
         prominenceGroup.add(curtain);
+
+        const duration = 9.0 + Math.random() * 8.0;
+        const cooldown = 2.0 + Math.random() * 5.0;
+        // Stagger initial phases so only ~2-3 prominences are gently emerging/fading at once instead of 6 static ones
+        const initialOffset = (i / curtainCount) * (duration + cooldown);
+        prominenceSlots.push({
+          mesh: curtain,
+          bornAt: -initialOffset,
+          duration,
+          cooldown,
+        });
       }
       tiltGroup.add(prominenceGroup);
     }
@@ -892,6 +1020,7 @@ export class BodyRenderer {
       ringMesh,
       coronaMesh,
       prominenceGroup,
+      prominenceSlots,
       blackHoleVolume,
       pulsarJets,
       cometComa,

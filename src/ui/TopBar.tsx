@@ -19,6 +19,7 @@ import {
   Tag,
   Volume2,
   VolumeX,
+  Wind,
   Zap,
 } from 'lucide-react';
 import { formatSimTime } from '../physics/constants';
@@ -38,6 +39,7 @@ export function TopBar() {
   const showVectors = useCosmosStore((s) => s.showVectors);
   const showRocheLimits = useCosmosStore((s) => s.showRocheLimits);
   const showLabels = useCosmosStore((s) => s.showLabels);
+  const showSpaceWeatherField = useCosmosStore((s) => s.showSpaceWeatherField);
   const autoThermo = useCosmosStore((s) => s.autoThermo);
   const audioMuted = useCosmosStore((s) => s.audioMuted);
   const bodyListOpen = useCosmosStore((s) => s.bodyListOpen);
@@ -59,6 +61,7 @@ export function TopBar() {
   const toggleVectors = useCosmosStore((s) => s.toggleVectors);
   const toggleRocheLimits = useCosmosStore((s) => s.toggleRocheLimits);
   const toggleLabels = useCosmosStore((s) => s.toggleLabels);
+  const toggleSpaceWeatherField = useCosmosStore((s) => s.toggleSpaceWeatherField);
   const toggleAutoThermo = useCosmosStore((s) => s.toggleAutoThermo);
   const toggleAudioMute = useCosmosStore((s) => s.toggleAudioMute);
   const toggleBodyList = useCosmosStore((s) => s.toggleBodyList);
@@ -269,6 +272,14 @@ export function TopBar() {
             >
               <Orbit size={14} />
               <span>天体轨道尾迹</span>
+            </button>
+            <button
+              className={`overlay-toggle-item ${showSpaceWeatherField ? 'active' : ''}`}
+              onClick={toggleSpaceWeatherField}
+              title="关闭即切换至纯肉眼光学视角（隐藏不可见的太阳风粒子流与磁力线，仅保留耀斑、日珥与地球极光）"
+            >
+              <Wind size={14} />
+              <span>太阳风粒子流与磁力线</span>
             </button>
             <button
               className={`overlay-toggle-item ${autoThermo ? 'active' : ''}`}

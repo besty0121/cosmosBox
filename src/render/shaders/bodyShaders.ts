@@ -89,6 +89,9 @@ export function createStarMaterial(body: CelestialBody, textures: PlanetTextures
       uColorPrimary: { value: new THREE.Color(body.color) },
       uColorSecondary: { value: new THREE.Color(body.secondaryColor) },
       uTemperature: { value: body.temperature },
+      uFlareDirLocal: { value: new THREE.Vector3(1, 0, 0) },
+      uFlarePower: { value: 0 },
+      uFlareAge: { value: 0 },
     },
     vertexShader: TEXTURED_SPHERE_VERTEX,
     fragmentShader: /* glsl */ `
@@ -98,6 +101,9 @@ export function createStarMaterial(body: CelestialBody, textures: PlanetTextures
       uniform vec3 uColorPrimary;
       uniform vec3 uColorSecondary;
       uniform float uTemperature;
+      uniform vec3 uFlareDirLocal;
+      uniform float uFlarePower;
+      uniform float uFlareAge;
 
       varying vec2 vUv;
       varying vec3 vNormalWorld;
@@ -114,6 +120,20 @@ export function createStarMaterial(body: CelestialBody, textures: PlanetTextures
         vec2 flowSampleA = texture2D(uSunMap, vUv * 1.4 + vec2(uTime * 0.0025, -uTime * 0.0018)).rg - 0.5;
         vec2 flowSampleB = texture2D(uSunMap, vUv * 2.8 + vec2(-uTime * 0.0032, uTime * 0.0022)).rg - 0.5;
         vec2 warp = (flowSampleA * 0.022 + flowSampleB * 0.011);
+
+        // Real CME Eruption Surface Coupling: Strictly OUTWARD-expanding Moreton / EUV Solar Tsunami Shockwave!
+        vec3 fDir = normalize(uFlareDirLocal);
+        float cosF = clamp(dot(q, fDir), -1.0, 1.0);
+        float angDist = acos(cosF);
+        float waveR = 0.05 + uFlareAge * 1.48;
+        float waveW = 0.08 + uFlareAge * 0.07;
+        // Fade cleanly before reaching the antipode so far-side eruptions never look like an inward-converging front ring!
+        float hemiFade = smoothstep(1.70, 0.85, angDist);
+        float moretonWave = uFlarePower > 0.004
+          ? exp(-pow((angDist - waveR) / waveW, 2.0)) * smoothstep(1.0, 0.08, uFlareAge) * hemiFade * uFlarePower
+          : 0.0;
+        // Physically churn the boiling photosphere granulation as the solar tsunami wave sweeps outward!
+        warp += (flowSampleA * 0.055 + vec2(0.022, -0.018)) * moretonWave * 1.85;
 
         // Dual phase-blended boiling convection layers (genuine turbulent churning!)
         float phase1 = fract(uTime * 0.018 + uSeed * 0.1);
@@ -157,9 +177,28 @@ export function createStarMaterial(body: CelestialBody, textures: PlanetTextures
         col = mix(col, darkPore * 0.42, darkFilament * 0.55);
         col += mix(uColorPrimary, vec3(1.0, 0.94, 0.72), 0.5) * activePlage * 0.32;
 
+        // Sinuous Two-Ribbon X-Class Solar Flare embedded inside boiling granulation + Moreton Tsunami Crest!
+        if (uFlarePower > 0.004) {
+          vec3 refUp = abs(fDir.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+          vec3 tanA = normalize(cross(fDir, refUp));
+          vec3 tanB = normalize(cross(fDir, tanA));
+          vec3 dVec = q - fDir * cosF;
+          float tx = dot(dVec, tanA);
+          float ty = dot(dVec, tanB);
+          float shearX = abs(tx + flowSampleA.x * 0.14 + sin(ty * 14.0 + uTime * 2.2) * 0.024);
+          float ribbonPair = exp(-pow((shearX - 0.052) / 0.024, 2.0)) * exp(-pow(ty / 0.23, 2.0));
+          float activeCore = exp(-pow(angDist / 0.18, 2.0)) * (0.35 + 0.65 * cells);
+          float flareEnv = smoothstep(0.65, 0.0, uFlareAge) * uFlarePower;
+
+          vec3 flareWhiteGold = vec3(1.95, 1.68, 1.12);
+          vec3 tsunamiGold = vec3(1.58, 0.76, 0.22);
+          col += flareWhiteGold * (ribbonPair * 1.45 + activeCore * 0.55) * flareEnv;
+          col += tsunamiGold * moretonWave * (0.45 + 0.90 * cells) * 0.92;
+        }
+
         // Subtle ruby-orange chromosphere glow ONLY at the razor-thin silhouette edge
         vec3 hAlphaCrimson = mix(uColorSecondary, vec3(1.0, 0.22, 0.04), 0.65);
-        vec3 finalCol = col * limbDark * 1.15 + hAlphaCrimson * thinChromoRim * 0.85;
+        vec3 finalCol = col * limbDark * 1.15 + hAlphaCrimson * thinChromoRim * (0.85 + moretonWave * 1.15);
 
         gl_FragColor = vec4(finalCol, 1.0);
       }
@@ -187,14 +226,42 @@ export function createProminenceMaterial(
       uSunMap: { value: sunTexture },
       uColor: { value: new THREE.Color(colorHex) },
       uStarWorldPos: { value: new THREE.Vector3() },
+      uSurgePower: { value: 0 },
+      uSurgeAge: { value: 0 },
+      uEruptScroll: { value: 0 },
+      uLifeProgress: { value: 0.5 },
+      uLifeAlpha: { value: 1.0 },
+      uFlareDirWorld: { value: new THREE.Vector3(1, 0, 0) },
+      uIsEruptive: { value: 0 },
     },
     vertexShader: /* glsl */ `
+      uniform float uTime;
+      uniform float uSurgePower;
+      uniform float uSurgeAge;
+      uniform float uLifeProgress;
+      uniform float uIsEruptive;
       varying vec2 vUv;
       varying vec3 vNormalWorld;
       varying vec3 vWorldPos;
       void main() {
         vUv = uv;
-        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vec3 p = position;
+        float alt = vUv.y;
+        // Strictly OUTWARD rising, billowing & eruptive stretching (ZERO snap when eruption ends!)
+        float waveRipple = sin(vUv.x * 7.5 - uTime * 2.4) * 0.035 * alt * (0.35 + uSurgePower);
+        float radialStretch;
+        if (uIsEruptive > 0.5) {
+          // Emerges smoothly out of the chromosphere and blasts strictly outward as uSurgeAge goes 0 -> 1!
+          radialStretch = mix(-0.22, 0.72, smoothstep(0.0, 0.90, uSurgeAge)) * alt;
+        } else {
+          // Ambient random prominence lifecycle: smoothly rises & swells with uSurgePower (zero reset jump!)
+          float rise = mix(-0.32, 0.16, smoothstep(0.0, 0.65, uLifeProgress));
+          radialStretch = (rise + 0.18 * uSurgePower) * alt;
+        }
+        vec3 radDir = normalize(p);
+        p += radDir * radialStretch + normal * waveRipple;
+
+        vec4 wp = modelMatrix * vec4(p, 1.0);
         vWorldPos = wp.xyz;
         vNormalWorld = normalize(mat3(modelMatrix) * normal);
         gl_Position = projectionMatrix * viewMatrix * wp;
@@ -207,12 +274,20 @@ export function createProminenceMaterial(
       uniform sampler2D uSunMap;
       uniform vec3 uColor;
       uniform vec3 uStarWorldPos;
+      uniform float uSurgePower;
+      uniform float uSurgeAge;
+      uniform float uEruptScroll;
+      uniform float uLifeProgress;
+      uniform float uLifeAlpha;
+      uniform vec3 uFlareDirWorld;
+      uniform float uIsEruptive;
 
       varying vec2 vUv;
       varying vec3 vNormalWorld;
       varying vec3 vWorldPos;
 
       void main() {
+        if (uLifeAlpha < 0.005) discard;
         float x = vUv.x * 2.0 - 1.0; // [-1 .. 1]
         float y = vUv.y;             // [0 .. 1] radial altitude
 
@@ -224,61 +299,81 @@ export function createProminenceMaterial(
         vec3 V = normalize(cameraPosition - vWorldPos);
         float viewFade = smoothstep(0.12, 0.52, abs(dot(N, V)));
 
-        // Authentic SDO limb physics: prominences shine brilliantly ONLY against dark space near the solar limb,
-        // fading smoothly when crossing the bright front disc (eliminates front-face smear!)
+        // Authentic SDO limb physics: prominences shine brilliantly against dark space near the solar limb,
+        // while erupting CME plumes also remain softly visible arching over the chromosphere!
         vec3 radialDir = normalize(vWorldPos - uStarWorldPos);
         float limbOnly = smoothstep(0.62, 0.28, abs(dot(radialDir, V)));
-        float visibility = rectSafe * viewFade * limbOnly;
+        if (uIsEruptive > 0.5) {
+          limbOnly = mix(limbOnly, smoothstep(0.88, 0.36, abs(dot(radialDir, V))), 0.65);
+        }
+        float eruptLife = uIsEruptive > 0.5
+          ? smoothstep(0.0, 0.12, uSurgeAge) * smoothstep(0.95, 0.25, uSurgeAge) * uSurgePower
+          : uLifeAlpha;
+        float visibility = rectSafe * viewFade * limbOnly * eruptLife;
         if (visibility < 0.008) discard;
 
-        // Organic turbulent magnetic advection
-        vec2 baseUv = vec2(vUv.x * 1.2 + uSeed * 0.13, y * 1.4 - uTime * 0.022 + uSeed * 0.07);
-        vec2 warp1 = texture2D(uSunMap, baseUv * 0.85 + vec2(0.11, -uTime * 0.01)).rg - 0.5;
-        vec2 warp2 = texture2D(uSunMap, baseUv * 2.1 + warp1 * 0.42 + vec2(uTime * 0.012, -uTime * 0.028)).rg - 0.5;
+        // Local surge amplification: stronger for curtains near the CME epicenter + global coronal wave response!
+        float prox = uIsEruptive > 0.5
+          ? 1.0
+          : (0.28 + 0.72 * smoothstep(-0.25, 0.85, dot(radialDir, normalize(uFlareDirWorld))));
+        float localSurge = uSurgePower * prox;
 
-        // Delicate, slender, genuinely asymmetric prominence silhouettes (10-22% solar radius height)
+        // STRICTLY MONOTONICALLY OUTWARD & NEVER-RESETTING plasma flow (uses cumulative uEruptScroll -> ZERO A->B snap!)
+        float outwardScroll = uIsEruptive > 0.5
+          ? (uTime * 0.026 + uSurgeAge * 0.55)
+          : (uTime * 0.026 + uEruptScroll * 0.48 + uLifeProgress * 0.22);
+        vec2 baseUv = vec2(vUv.x * 1.2 + uSeed * 0.13, y * 1.4 - outwardScroll + uSeed * 0.07);
+        vec2 warp1 = texture2D(uSunMap, baseUv * 0.85 + vec2(0.11, -outwardScroll * 0.45)).rg - 0.5;
+        vec2 warp2 = texture2D(uSunMap, baseUv * 2.1 + warp1 * 0.44 + vec2(uTime * 0.010, -outwardScroll * 0.95)).rg - 0.5;
+
+        // Delicate, slender, genuinely asymmetric prominence silhouettes that emerge, rise outward, and dissolve!
+        float growMask = uIsEruptive > 0.5
+          ? smoothstep(0.0, 0.35, uSurgeAge)
+          : smoothstep(0.0, 0.32, uLifeProgress);
         float shapeMask = 0.0;
         if (uVariant < 0.5) {
-          // Hedgerow prominence: ragged uneven plasma forest with fine draining threads
-          float heightLimit = 0.28 + 0.16 * sin(x * 4.2 + uSeed) + warp1.x * 0.22 + warp2.y * 0.12;
+          // Hedgerow prominence: ragged uneven plasma forest rising & dissolving naturally
+          float heightLimit = (0.14 + 0.28 * growMask + 0.16 * localSurge) + 0.14 * sin(x * 4.2 + uSeed) + warp1.x * 0.22 + warp2.y * 0.12;
           float lateral = smoothstep(0.82, 0.18, abs(x + warp1.y * 0.24));
           float topFade = smoothstep(heightLimit + 0.14, heightLimit - 0.14, y);
           shapeMask = lateral * topFade;
         } else if (uVariant < 1.5) {
-          // Slender asymmetric eruptive surge / tilted magnetic plume
-          float leanX = x - y * (0.55 + 0.22 * sin(uSeed)) + warp1.x * 0.26;
-          float width = mix(0.24, 0.09, y) + warp2.x * 0.10;
+          // Slender asymmetric eruptive surge / tilted magnetic plume shooting strictly outward
+          float leanX = x - y * (0.42 + 0.22 * sin(uSeed)) + warp1.x * 0.28;
+          float width = mix(0.22 + 0.08 * localSurge, 0.08 + 0.05 * localSurge, y) + warp2.x * 0.10;
           float plume = smoothstep(width + 0.16, width * 0.15, abs(leanX));
-          float heightFade = smoothstep(0.72, 0.12, y + warp1.y * 0.18);
+          float heightFade = smoothstep(0.24 + 0.58 * growMask + 0.16 * localSurge, 0.08, y + warp1.y * 0.18);
           shapeMask = plume * heightFade;
         } else {
-          // Torn asymmetrical magnetic loop with dark coronal cavity & wispy upper tendrils
-          float asymX = x + warp1.x * 0.22 + y * 0.16;
-          float archR = length(vec2(asymX * 1.35, (y + 0.04) * 1.85));
+          // Torn asymmetrical magnetic loop with dark coronal cavity that opens & dissipates as it ages
+          float asymX = x + warp1.x * 0.24 + y * 0.16;
+          float archR = length(vec2(asymX * 1.35, (y + 0.04) * (2.15 - 0.55 * growMask - 0.28 * localSurge)));
           float outer = smoothstep(0.78 + warp1.y * 0.20, 0.48, archR);
           float cavity = smoothstep(0.22 + warp2.x * 0.14, 0.46, archR);
-          float breakGap = smoothstep(-0.1, 0.45, sin(x * 5.0 + uSeed) + warp1.x * 1.6 + 0.55);
+          float ageBreak = uIsEruptive > 0.5 ? uSurgeAge : smoothstep(0.55, 1.0, uLifeProgress);
+          float breakGap = smoothstep(-0.1, 0.45, sin(x * 5.0 + uSeed) + warp1.x * 1.6 + 0.55 - 0.42 * ageBreak);
           shapeMask = outer * cavity * breakGap;
         }
 
-        // Shred into delicate translucent glowing plasma strands
-        vec2 threadUv = vec2(vUv.x * 3.1 + warp1.x * 0.55, y * 1.8 - uTime * 0.032 + warp1.y * 0.30);
+        // Shred into delicate translucent glowing plasma strands flowing strictly outward
+        vec2 threadUv = vec2(vUv.x * 3.1 + warp1.x * 0.55, y * 1.8 - outwardScroll * 1.35 + warp1.y * 0.30);
         float t1 = dot(texture2D(uSunMap, threadUv).rgb, vec3(0.3, 0.59, 0.11));
         float t2 = dot(texture2D(uSunMap, threadUv * 2.3 + warp2 * 0.45).rgb, vec3(0.3, 0.59, 0.11));
-        float wisps = smoothstep(0.32, 0.88, t1 * 0.62 + t2 * 0.50);
+        float wisps = smoothstep(0.30 - 0.06 * localSurge, 0.88, t1 * 0.62 + t2 * 0.50);
 
         float density = shapeMask * wisps * visibility;
         if (density < 0.012) discard;
 
-        // Authentic NASA SDO 304A / H-Alpha deep ruby-crimson to fiery tangerine-orange ramp
+        // Authentic NASA SDO 304A / H-Alpha deep ruby-crimson to fiery tangerine-orange & incandescent gold surge ramp
         vec3 deepRuby = mix(vec3(0.78, 0.06, 0.02), uColor * 0.55, 0.25);
         vec3 fieryOrange = mix(vec3(1.0, 0.32, 0.05), uColor * 0.9, 0.35);
-        vec3 hotStrand = vec3(1.0, 0.72, 0.32);
+        vec3 hotStrand = mix(vec3(1.0, 0.72, 0.32), vec3(1.65, 1.35, 0.85), localSurge * 0.65);
 
         vec3 col = mix(deepRuby, fieryOrange, smoothstep(0.08, 0.55, density));
-        col = mix(col, hotStrand, smoothstep(0.55, 0.95, density));
+        col = mix(col, hotStrand, smoothstep(0.50, 0.92, density + localSurge * 0.22));
 
-        gl_FragColor = vec4(col * 1.25, clamp(density * 0.82, 0.0, 0.78));
+        float gain = 1.25 + localSurge * 0.85;
+        gl_FragColor = vec4(col * gain, clamp(density * (0.82 + localSurge * 0.32), 0.0, 0.88));
       }
     `,
     transparent: true,
@@ -305,6 +400,10 @@ export function createSolarCoronaMaterial(
       uSeed: { value: seed },
       uSunMap: { value: sunTexture },
       uColor: { value: new THREE.Color(colorHex) },
+      uFlareDir2D: { value: new THREE.Vector2(1, 0) },
+      uFlarePower: { value: 0 },
+      uFlareAge: { value: 0 },
+      uEruptScroll: { value: 0 },
     },
     vertexShader: /* glsl */ `
       varying vec2 vUv;
@@ -318,6 +417,10 @@ export function createSolarCoronaMaterial(
       uniform float uSeed;
       uniform sampler2D uSunMap;
       uniform vec3 uColor;
+      uniform vec2 uFlareDir2D;
+      uniform float uFlarePower;
+      uniform float uFlareAge;
+      uniform float uEruptScroll;
       varying vec2 vUv;
 
       const float PI = 3.14159265359;
@@ -335,29 +438,36 @@ export function createSolarCoronaMaterial(
         float ang = atan(p.y, p.x);
         float uAng = ang / (2.0 * PI) + 0.5;
 
-        // 1. Fine flickering chromospheric spicules hugging the exact horizon of the Sun
-        float spiculeTex = dot(texture2D(uSunMap, vec2(uAng * 7.0 + uSeed * 0.1, r * 6.0 - uTime * 0.08)).rgb, vec3(0.3, 0.59, 0.11));
-        float spiculeDist = max(0.0, r - R_LIMB);
-        float spiculeHeight = 0.022 + spiculeTex * 0.032;
-        float spicules = smoothstep(spiculeHeight, 0.0, spiculeDist) * smoothstep(R_LIMB * 0.94, R_LIMB * 1.005, r) * (0.45 + 0.85 * spiculeTex);
+        // Directional coronal streamer & spicule eruption coupling along the active CME launch azimuth!
+        float fMag = length(uFlareDir2D);
+        vec2 fDir2 = fMag > 0.01 ? (uFlareDir2D / fMag) : vec2(1.0, 0.0);
+        float azAlign = mix(0.42, pow(max(0.0, dot(p / max(0.001, r), fDir2)), 4.2), smoothstep(0.15, 0.65, fMag));
+        float eruptEnv = uFlarePower * smoothstep(0.98, 0.15, uFlareAge);
 
-        // 2. Asymmetric helmet-streamer solar corona (feathery magnetic field lines extending outward)
-        float streamTex1 = dot(texture2D(uSunMap, vec2(uAng * 1.6 + uSeed * 0.23, r * 0.55 - uTime * 0.012)).rgb, vec3(0.3, 0.59, 0.11));
-        float streamTex2 = dot(texture2D(uSunMap, vec2(uAng * 3.8 - uSeed * 0.17, r * 0.95 - uTime * 0.02)).rgb, vec3(0.3, 0.59, 0.11));
+        // 1. Fine flickering chromospheric spicules (cumulative NEVER-RESETTING uEruptScroll -> ZERO A->B snap!)
+        float spiculeTex = dot(texture2D(uSunMap, vec2(uAng * 7.0 + uSeed * 0.1, r * 6.0 - uTime * 0.08 - uEruptScroll * 0.85)).rgb, vec3(0.3, 0.59, 0.11));
+        float spiculeDist = max(0.0, r - R_LIMB);
+        float spiculeHeight = 0.022 + spiculeTex * 0.032 + 0.042 * azAlign * eruptEnv;
+        float spicules = smoothstep(spiculeHeight, 0.0, spiculeDist) * smoothstep(R_LIMB * 0.94, R_LIMB * 1.005, r) * (0.45 + 0.85 * spiculeTex + 0.65 * azAlign * eruptEnv);
+
+        // 2. Asymmetric helmet-streamer solar corona + STRICTLY OUTWARD sweeping CME coronal blast wave!
+        float streamTex1 = dot(texture2D(uSunMap, vec2(uAng * 1.6 + uSeed * 0.23, r * 0.55 - uTime * 0.014 - uEruptScroll * 0.34)).rgb, vec3(0.3, 0.59, 0.11));
+        float streamTex2 = dot(texture2D(uSunMap, vec2(uAng * 3.8 - uSeed * 0.17, r * 0.95 - uTime * 0.024 - uEruptScroll * 0.52)).rgb, vec3(0.3, 0.59, 0.11));
         float dipoleBias = 0.65 + 0.35 * cos(ang * 2.0 + 0.4 + uSeed); // equatorial streamer belt
         float streamers = (0.42 + 0.72 * streamTex1 * streamTex2) * dipoleBias;
 
         float distOut = max(0.0, r - R_LIMB);
-        float innerCorona = exp(-distOut * 9.5) * (0.48 + 0.52 * streamers);
-        float outerCorona = exp(-distOut * 3.8) * streamers * 0.26;
+        float blastWave = exp(-pow((distOut - (0.03 + uFlareAge * 0.42)) / 0.11, 2.0)) * azAlign * eruptEnv * (0.55 + 0.85 * streamTex1);
+        float innerCorona = exp(-distOut * 9.5) * (0.48 + 0.52 * streamers + 0.55 * azAlign * eruptEnv);
+        float outerCorona = exp(-distOut * 3.8) * streamers * 0.26 + blastWave * 0.58;
         float outerFade = smoothstep(0.98, 0.42, r);
         float limbMask = smoothstep(R_LIMB * 0.95, R_LIMB * 1.03, r);
 
         vec3 spiculeCol = mix(vec3(1.0, 0.28, 0.06), uColor, 0.35) * spicules * 1.25;
-        vec3 coronaCol = mix(uColor, vec3(1.0, 0.93, 0.82), clamp(innerCorona * 0.65, 0.0, 1.0)) * (innerCorona + outerCorona) * outerFade * limbMask * 1.05;
+        vec3 coronaCol = mix(uColor, vec3(1.0, 0.93, 0.82), clamp(innerCorona * 0.65 + blastWave * 0.5, 0.0, 1.0)) * (innerCorona + outerCorona) * outerFade * limbMask * 1.05;
 
         vec3 finalCol = spiculeCol + coronaCol;
-        float alpha = clamp((spicules * 0.78 + (innerCorona + outerCorona) * outerFade * limbMask * 0.85), 0.0, 0.92);
+        float alpha = clamp((spicules * 0.78 + (innerCorona + outerCorona) * outerFade * limbMask * 0.85), 0.0, 0.94);
         if (alpha < 0.008) discard;
         gl_FragColor = vec4(finalCol, alpha);
       }

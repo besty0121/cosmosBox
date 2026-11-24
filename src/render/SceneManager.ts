@@ -90,6 +90,7 @@ export class SceneManager {
   public showVectors = false;
   public showRocheLimits = false;
   public showLabels = false;
+  public showSpaceWeatherField = true;
   public selectedBodyId: string | null = null;
   public focusBodyId: string | null = null;
   public cameraMode: CameraMode = 'orbit';
@@ -1213,7 +1214,8 @@ export class SceneManager {
       this.scaleMode,
       this.showTrails,
       this.cameraMode === 'orbit' ? this.selectedBodyId : null,
-      this.elapsedTime
+      this.elapsedTime,
+      this.engine.cmeWaves
     );
     this.debrisRenderer.sync(this.engine.debris.particles, this.originMeters);
     this.galaxyRenderer.sync(this.engine.galaxy.stars, this.originMeters);
@@ -1223,7 +1225,9 @@ export class SceneManager {
       this.engine.tidalStreams,
       this.bodyRenderer,
       this.originMeters,
-      this.elapsedTime
+      this.elapsedTime,
+      this.camera,
+      this.showSpaceWeatherField
     );
     this.spacetimeGrid.sync(
       this.showGravityGrid,
