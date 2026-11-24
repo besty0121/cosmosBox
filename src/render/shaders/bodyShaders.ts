@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { CelestialBody } from '../../types/cosmos';
+import { AndromedaDiskMaps } from '../AndromedaBaker';
 import { PlanetTextures } from '../TextureAtlas';
 
 export const MAX_STAR_LIGHTS = 4;
@@ -2423,5 +2424,707 @@ export function createGravitationalLensMaterial(): THREE.ShaderMaterial {
     depthWrite: false,
     depthTest: true,
     side: THREE.BackSide,
+  });
+}
+
+// ============================================================================
+// 11. UN-LENSED 3D GRAND-DESIGN SPIRAL GALAXY & QUASAR CORE (for isLensSource close-up!)
+//     Matches exact morphology & colors of evalPrimarySourceGalaxy so users can compare
+//     the true un-lensed spiral galaxy vs its GR Einstein Ring / Cross lensed image!
+// ============================================================================
+
+export function createSourceGalaxyDiscMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+    },
+    vertexShader: /* glsl */ `
+      varying vec2 vLocalXY;
+      void main() {
+        vLocalXY = position.xy; // [-2.8 .. +2.8]
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform float uTime;
+      varying vec2 vLocalXY;
+      ${GLSL_COMET_NOISE}
+
+      void main() {
+        // Rotate very slowly for alive cosmological majesty
+        float spin = -uTime * 0.035;
+        float cs = cos(spin);
+        float sn = sin(spin);
+        vec2 d = mat2(cs, -sn, sn, cs) * (vLocalXY / 2.8);
+        float r = length(d);
+        if (r > 1.0) discard;
+
+        float edgeFade = smoothstep(1.0, 0.44, r);
+        float ang = atan(d.y, d.x);
+
+        // Twin logarithmic grand-design spiral arms + fine dusty lanes + rose H-II star-forming knots!
+        float logR = log(max(r, 0.018));
+        float armPhase = 2.0 * ang - logR * 5.2;
+        float mainArms = pow(0.5 + 0.5 * cos(armPhase), 2.5);
+        float subArms = pow(0.5 + 0.5 * cos(armPhase * 2.0 + 0.9), 2.0) * 0.35;
+
+        float turb = cFbm2(d * 6.5 + vec2(cos(armPhase) * 0.35, sin(armPhase) * 0.35));
+        float fineClumps = cFbm2(d * 15.0 + vec2(3.1, 7.4));
+        float knots = smoothstep(0.46, 0.86, fineClumps) * mainArms;
+
+        float diskEnv = exp(-r * 2.05) * edgeFade;
+        float bulge = exp(-r * r * 22.0) * 0.62;
+        float quasarCore = exp(-r * r * 280.0) * 0.95;
+
+        vec3 bulgeGold = vec3(1.48, 0.98, 0.44);
+        vec3 armBlue = vec3(0.32, 0.74, 1.62);
+        vec3 h2Rose = vec3(1.48, 0.36, 0.76);
+        vec3 dustAmber = vec3(1.26, 0.60, 0.22);
+        vec3 quasarCyanWhite = vec3(1.05, 1.58, 2.25);
+
+        vec3 diskCol = mix(armBlue, h2Rose, smoothstep(0.48, 0.86, fineClumps) * 0.62);
+        diskCol = mix(diskCol, dustAmber, smoothstep(0.42, 0.08, r) * 0.50);
+
+        vec3 col = diskCol * diskEnv * (0.24 + (mainArms + subArms) * (0.65 + 0.75 * turb) + 1.35 * knots);
+        col += bulgeGold * bulge;
+        col += quasarCyanWhite * quasarCore;
+
+        col = col / (1.0 + col * 0.68);
+        float lum = max(col.r, max(col.g, col.b));
+        float alpha = clamp(lum * 1.05 * edgeFade, 0.0, 0.94);
+        if (alpha < 0.005) discard;
+        gl_FragColor = vec4(col, alpha);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+}
+
+export function createSourceGalaxyBulgeMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    vertexShader: /* glsl */ `
+      varying vec3 vNormalWorld;
+      varying vec3 vWorldPos;
+      void main() {
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorldPos = wp.xyz;
+        vNormalWorld = normalize(mat3(modelMatrix) * normal);
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      varying vec3 vNormalWorld;
+      varying vec3 vWorldPos;
+      void main() {
+        vec3 N = normalize(vNormalWorld);
+        vec3 V = normalize(cameraPosition - vWorldPos);
+        float ndv = abs(dot(N, V));
+        // True 3D volumetric spheroid core (zero hard sphere rim -> rich 3D thickness from edge-on!)
+        float bulge = pow(ndv, 3.0) * 0.34;
+        float quasar = pow(ndv, 22.0) * 0.72;
+        vec3 col = vec3(1.38, 0.86, 0.36) * bulge + vec3(0.95, 1.52, 2.25) * quasar;
+        float alpha = clamp(bulge + quasar * 0.75, 0.0, 0.78);
+        if (alpha < 0.005) discard;
+        gl_FragColor = vec4(col, alpha);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.FrontSide,
+  });
+}
+
+export function createSourceGalaxyStarsMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+    },
+    vertexShader: /* glsl */ `
+      attribute vec3 aStarCol;
+      attribute float aStarSize;
+      uniform float uTime;
+      varying vec3 vCol;
+      varying float vRadialFade;
+      void main() {
+        vCol = aStarCol;
+        float rNorm = length(position.xy) / 2.8;
+        vRadialFade = (1.0 - smoothstep(0.42, 0.84, rNorm)) * (0.42 + 0.58 * smoothstep(0.08, 0.28, rNorm));
+        float spin = -uTime * 0.035;
+        float cs = cos(spin);
+        float sn = sin(spin);
+        vec3 p = vec3(position.x * cs - position.y * sn, position.x * sn + position.y * cs, position.z);
+        vec4 mvPos = modelViewMatrix * vec4(p, 1.0);
+        gl_Position = projectionMatrix * mvPos;
+        gl_PointSize = clamp(aStarSize * (155.0 / max(12.0, -mvPos.z)), 1.5, 4.8);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      varying vec3 vCol;
+      varying float vRadialFade;
+      void main() {
+        vec2 p = gl_PointCoord - 0.5;
+        float r2 = dot(p, p);
+        if (r2 > 0.25) discard;
+        float core = exp(-r2 * 44.0) + exp(-r2 * 14.0) * 0.38;
+        float a = clamp(core * smoothstep(0.25, 0.14, r2) * 0.74 * vRadialFade, 0.0, 0.92);
+        if (a < 0.005) discard;
+        gl_FragColor = vec4(vCol, a);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+}
+
+// ============================================================================
+// 12. ANDROMEDA GALAXY (M31 / NGC 224) & SATELLITES (M32 & M110)
+//     - Pre-baked 2K Simplex-ridged dust filigree & micro-grain star cloud maps
+//     - 3-interval analytical slab-focused 3D radiative transfer (8 + 24 + 8 steps)
+//     - Authentic SA(s)b arms, NGC 206, P1/P2 double nucleus, Optical / IR / UV modes
+// ============================================================================
+
+export function createAndromedaVolumeMaterial(maps: AndromedaDiskMaps): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uColorMap: { value: maps.colorMap },
+      uDustMap: { value: maps.dustMap },
+      uTime: { value: 0 },
+      uInvModelMatrix: { value: new THREE.Matrix4() },
+      uDustOpacity: { value: 1.0 },
+      uSpectrumMode: { value: 0.0 },
+    },
+    vertexShader: /* glsl */ `
+      uniform mat4 uInvModelMatrix;
+      varying vec3 vLocalPos;
+      varying vec3 vLocalCamPos;
+
+      void main() {
+        vLocalPos = position;
+        vLocalCamPos = (uInvModelMatrix * vec4(cameraPosition, 1.0)).xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform sampler2D uColorMap;
+      uniform sampler2D uDustMap;
+      uniform float uTime;
+      uniform float uDustOpacity;
+      uniform float uSpectrumMode;
+
+      varying vec3 vLocalPos;
+      varying vec3 vLocalCamPos;
+
+      float evalBulgeQ(vec2 pRot, float py) {
+        vec2 barDir = vec2(cos(0.35), sin(0.35));
+        vec2 barPerp = vec2(-barDir.y, barDir.x);
+        vec2 pBar = vec2(dot(pRot, barDir), dot(pRot, barPerp));
+        return length(vec3(pBar.x * 0.88, py * 1.55, pBar.y * 1.08));
+      }
+
+      vec3 evalBulgeAndThickDisk(vec3 p, vec2 pRot, float ellipFade, float q, bool isIR, bool isUV) {
+        // Generous 3D luminous triaxial bulge matching M31's warm golden-ivory halo
+        float bulgeProfile = (
+          exp(-pow(max(q, 0.002), 0.56) * 2.02) * 0.36
+          + exp(-q * 2.35) * 0.026
+        ) * ellipFade;
+
+        vec3 bulgeCol = mix(
+          vec3(0.84, 0.58, 0.44),
+          vec3(1.04, 0.76, 0.54),
+          1.0 - smoothstep(0.22, 1.85, q)
+        );
+        bulgeCol = mix(bulgeCol, vec3(1.65, 1.48, 1.24), exp(-q * q * 3.8));
+
+        // Subtle 3D warm-to-twilight thick stellar spheroid disk (3D volume without chalk-white washout)
+        float thickR = length(pRot) / 9.4;
+        float hThick = mix(0.38, 0.16, clamp(thickR, 0.0, 1.0));
+        float thickOuterFade = 1.0 - smoothstep(0.68, 0.98, thickR);
+        float thickProfile = exp(-thickR * 3.15) * exp(-pow(p.y / hThick, 2.0)) * 0.068 * thickOuterFade * ellipFade;
+        vec3 thickCol = mix(vec3(0.92, 0.64, 0.46), vec3(0.32, 0.38, 0.62), smoothstep(0.20, 0.74, thickR));
+
+        vec3 pBar3 = vec3(pRot.x, p.y, pRot.y);
+        float dP1Sq = dot(pBar3 - vec3(0.16, 0.0, 0.06), pBar3 - vec3(0.16, 0.0, 0.06));
+        float dP2Sq = dot(pBar3 - vec3(-0.08, 0.0, -0.03), pBar3 - vec3(-0.08, 0.0, -0.03));
+        float p1Glow = exp(-dP1Sq * 38.0) * 0.42 * ellipFade;
+        float p2Glow = exp(-dP2Sq * 52.0) * 0.35 * ellipFade;
+
+        if (isIR) {
+          return vec3(0.74, 0.86, 1.00) * (bulgeProfile * 0.24 + thickProfile * 0.18 + (p1Glow + p2Glow) * 0.18);
+        } else if (isUV) {
+          return vec3(0.58, 0.76, 1.25) * (bulgeProfile * 0.07 + thickProfile * 0.05)
+            + vec3(0.68, 0.90, 1.72) * p2Glow * 1.48;
+        }
+        return bulgeCol * bulgeProfile
+          + thickCol * thickProfile
+          + vec3(1.38, 1.16, 0.92) * p1Glow
+          + vec3(1.30, 1.36, 1.48) * p2Glow;
+      }
+
+      void marchBulgeSpan(
+        vec3 ro,
+        vec3 rd,
+        float tA,
+        float tB,
+        float jitter,
+        mat2 spinMat,
+        vec3 invRad,
+        bool isIR,
+        bool isUV,
+        vec3 T,
+        inout vec3 accum
+      ) {
+        float span = tB - tA;
+        if (span <= 1e-4) return;
+        float ds = span / 6.0;
+        float tStart = tA + ds * jitter;
+        for (int i = 0; i < 6; i++) {
+          vec3 p = ro + rd * (tStart + float(i) * ds);
+          float ellipR = length(p * invRad);
+          float ellipFade = 1.0 - smoothstep(0.45, 0.94, ellipR);
+          if (ellipFade <= 0.001) continue;
+          vec2 pRot = spinMat * p.xz;
+          float q = evalBulgeQ(pRot, p.y);
+          accum += T * evalBulgeAndThickDisk(p, pRot, ellipFade, q, isIR, isUV) * ds;
+        }
+      }
+
+      void main() {
+        vec3 ro = vLocalCamPos;
+        vec3 toFrag = vLocalPos - vLocalCamPos;
+        float distToFrag = length(toFrag);
+        if (distToFrag < 0.001) discard;
+        vec3 rd = toFrag / distToFrag;
+
+        vec3 invRad = vec3(1.0 / 10.2, 1.0 / 3.8, 1.0 / 10.2);
+        vec3 roS = ro * invRad;
+        vec3 rdS = rd * invRad;
+        float a = dot(rdS, rdS);
+        float b = dot(roS, rdS);
+        float c = dot(roS, roS) - 1.0;
+        float disc = b * b - a * c;
+        if (disc <= 0.0) discard;
+
+        float sq = sqrt(disc);
+        float t0 = max(0.0, (-b - sq) / a);
+        float t1 = min(distToFrag, (-b + sq) / a);
+        if (t1 <= t0) discard;
+
+        const float H_SLAB = 0.18;
+        float tSlab0;
+        float tSlab1;
+        if (abs(rd.y) < 1e-4) {
+          if (abs(ro.y) <= H_SLAB) {
+            tSlab0 = t0;
+            tSlab1 = t1;
+          } else {
+            tSlab0 = t1;
+            tSlab1 = t1;
+          }
+        } else {
+          float ta = (-H_SLAB - ro.y) / rd.y;
+          float tb = (H_SLAB - ro.y) / rd.y;
+          tSlab0 = clamp(min(ta, tb), t0, t1);
+          tSlab1 = clamp(max(ta, tb), t0, t1);
+        }
+
+        float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+
+        float spin = -uTime * 0.0022;
+        float csSpin = cos(spin);
+        float snSpin = sin(spin);
+        mat2 spinMat = mat2(csSpin, -snSpin, snSpin, csSpin);
+
+        bool isIR = uSpectrumMode > 0.5 && uSpectrumMode < 1.5;
+        bool isUV = uSpectrumMode >= 1.5;
+        // Compensates optically-thin 1/cos(i) path length when looking face-on (0 deg) without altering 77 deg / 90 deg exposure
+        float faceLift = mix(1.0, 1.85, smoothstep(0.45, 0.96, abs(rd.y)));
+
+        vec3 T = vec3(1.0);
+        vec3 accum = vec3(0.0);
+
+        // Interval 1: Foreground 3D triaxial bulge & warm thick disk (6 steps, zero texture reads)
+        marchBulgeSpan(ro, rd, t0, tSlab0, jitter, spinMat, invRad, isIR, isUV, T, accum);
+
+        // Interval 2: All 28 steps tightly focused inside |p.y| <= 0.18 dusty thin disk (eliminates grazing combing!)
+        float span2 = tSlab1 - tSlab0;
+        if (span2 > 1e-4) {
+          float ds = span2 / 28.0;
+          float tStart = tSlab0 + ds * jitter;
+          for (int i = 0; i < 28; i++) {
+            vec3 p = ro + rd * (tStart + float(i) * ds);
+            float ellipR = length(p * invRad);
+            float ellipFade = 1.0 - smoothstep(0.45, 0.94, ellipR);
+            if (ellipFade <= 0.001) continue;
+
+            vec2 pRot = spinMat * p.xz;
+            float q = evalBulgeQ(pRot, p.y);
+            vec3 emis = evalBulgeAndThickDisk(p, pRot, ellipFade, q, isIR, isUV);
+            vec3 ext = vec3(0.0);
+
+            float rNorm = length(pRot) / 9.4;
+            if (rNorm < 0.995) {
+              vec2 uv = pRot / 18.8 + 0.5;
+              vec4 colSample = texture2D(uColorMap, uv);
+              vec4 dustSample = texture2D(uDustMap, uv);
+
+              float slabTaper = 1.0 - smoothstep(0.11, 0.176, abs(p.y));
+              float hStar = mix(0.095, 0.062, clamp(rNorm, 0.0, 1.0));
+              float diskZ = exp(-pow(p.y / hStar, 2.0)) * slabTaper;
+
+              // Smooth 3D undulating vertical dust thickness (no periodic comb oscillation)
+              float yOff = (dustSample.a - 0.5) * 0.025;
+              float hDust = 0.036 + 0.032 * dustSample.a;
+              float dustZ = exp(-pow((p.y - yOff) / hDust, 2.0)) * slabTaper;
+              float dustOpt = (dustSample.r * 1.45 + dustSample.g * 1.65) * dustZ * uDustOpacity;
+
+              if (isIR) {
+                emis += colSample.rgb * diskZ * 0.18;
+                emis += vec3(1.72, 0.46, 0.12) * dustOpt * 0.85 + vec3(1.55, 0.76, 0.24) * dustSample.b * dustZ * 0.72;
+                ext = vec3(0.04) * dustOpt;
+              } else if (isUV) {
+                emis += vec3(0.40, 0.72, 1.75) * colSample.a * diskZ * 1.45 + vec3(0.88, 0.62, 1.55) * dustSample.b * dustZ * 0.52;
+                ext = vec3(0.55, 0.88, 1.40) * dustOpt * 0.75;
+              } else {
+                // Balanced exposure: preserves golden bulge, cobalt OB clouds, & deep espresso dust across 0 / 77 / 90 deg
+                emis += colSample.rgb * diskZ * 0.86 * faceLift;
+                emis += vec3(1.45, 0.22, 0.44) * dustSample.b * diskZ * 0.22;
+                float bulgeProx = exp(-q * 0.90);
+                emis += vec3(0.42, 0.16, 0.045) * dustOpt * exp(-dustOpt * 0.85) * (0.25 + 0.90 * bulgeProx) * 0.24;
+                ext = vec3(0.68, 1.40, 2.12) * dustOpt * 5.2;
+              }
+            }
+
+            vec3 stepT = exp(-ext * ds);
+            vec3 stepInteg = mix(vec3(ds), (1.0 - stepT) / max(ext, vec3(1e-4)), step(vec3(1e-4), ext));
+            accum += T * emis * stepInteg;
+            T *= stepT;
+            if (max(T.r, max(T.g, T.b)) < 0.012) break;
+          }
+        }
+
+        // Interval 3: Background 3D bulge & thick disk attenuated cleanly through foreground dust transmittance
+        if (max(T.r, max(T.g, T.b)) >= 0.012) {
+          marchBulgeSpan(ro, rd, tSlab1, t1, jitter, spinMat, invRad, isIR, isUV, T, accum);
+        }
+
+        // Calibrated Narkowicz ACES Filmic curve: core hits creamy ivory, outer blue/amber/dust stay saturated
+        accum *= 0.95;
+        accum = (accum * (2.51 * accum + 0.03)) / (accum * (2.43 * accum + 0.59) + 0.14);
+        accum = clamp(accum, vec3(0.0), vec3(1.0));
+
+        float opacity = clamp(1.0 - dot(T, vec3(0.30, 0.52, 0.18)), 0.0, 0.96);
+        float peak = max(max(accum.r, accum.g), max(accum.b, opacity));
+        if (peak < 0.003) discard;
+
+        gl_FragColor = vec4(accum, opacity);
+      }
+    `,
+    side: THREE.BackSide,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.CustomBlending,
+    blendEquation: THREE.AddEquation,
+    blendSrc: THREE.OneFactor,
+    blendDst: THREE.OneMinusSrcAlphaFactor,
+    blendEquationAlpha: THREE.AddEquation,
+    blendSrcAlpha: THREE.ZeroFactor,
+    blendDstAlpha: THREE.OneFactor,
+  });
+}
+
+export function createAndromedaStarsMaterial(maps: AndromedaDiskMaps): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uSpectrumMode: { value: 0.0 },
+      uPixelRatio: { value: 1.25 },
+      uDustMap: { value: maps.dustMap },
+      uDustOpacity: { value: 1.0 },
+      uInvModelMatrix: { value: new THREE.Matrix4() },
+    },
+    vertexShader: /* glsl */ `
+      attribute vec3 aStarCol;
+      attribute float aStarSize;
+      attribute float aStarPop;
+
+      uniform float uTime;
+      uniform float uSpectrumMode;
+      uniform float uPixelRatio;
+      uniform sampler2D uDustMap;
+      uniform float uDustOpacity;
+      uniform mat4 uInvModelMatrix;
+
+      varying vec3 vCol;
+      varying float vAlpha;
+      varying float vSpike;
+
+      void main() {
+        bool isForeground = aStarPop > 2.5;
+        vec3 p = position;
+        float spin = -uTime * 0.0022;
+        float cs = cos(spin);
+        float sn = sin(spin);
+        if (!isForeground) {
+          p = vec3(position.x * cs - position.z * sn, position.y, position.x * sn + position.z * cs);
+        }
+
+        vec4 mvPos = modelViewMatrix * vec4(p, 1.0);
+        float camDist = max(8.0, -mvPos.z);
+
+        bool isIR = uSpectrumMode > 0.5 && uSpectrumMode < 1.5;
+        bool isUV = uSpectrumMode >= 1.5;
+
+        float rNorm = length(position.xz) / 9.4;
+        float radialFade = (aStarPop > 0.5 && !isForeground) ? (1.0 - smoothstep(0.60, 0.96, rNorm)) : 1.0;
+        float proxFade = isForeground ? smoothstep(11.0, 25.0, -mvPos.z) : 1.0;
+
+        vSpike = isForeground ? clamp((aStarSize - 1.95) * 0.58, 0.0, 1.0) : 0.0;
+        vCol = aStarCol;
+        vAlpha = (isForeground ? 0.90 : 0.38) * radialFade * proxFade;
+
+        if (!isForeground) {
+          if (isIR) {
+            if (aStarPop > 1.5) {
+              vCol = vec3(1.42, 0.54, 0.18);
+              vAlpha = 0.92 * radialFade;
+            } else if (aStarPop > 0.5) {
+              vCol = vec3(0.72, 0.85, 1.05);
+              vAlpha = 0.18 * radialFade;
+            } else {
+              vCol = vec3(0.84, 0.90, 1.0);
+              vAlpha = 0.30;
+            }
+          } else if (isUV) {
+            if (aStarPop > 0.5) {
+              vCol = vec3(0.55, 0.84, 1.65);
+              vAlpha = 0.92 * radialFade;
+            } else {
+              vCol = aStarCol * 0.42;
+              vAlpha = 0.15;
+            }
+          } else {
+            // True 3D ray-to-equatorial-plane (y=0) intersection for background/far-side stars behind dark dust lanes
+            vec3 localCam = (uInvModelMatrix * vec4(cameraPosition, 1.0)).xyz;
+            vec3 rd = p - localCam;
+            float dustSum = 0.0;
+            if (localCam.y * p.y < 0.0 && abs(rd.y) > 1e-4) {
+              float tHit = -localCam.y / rd.y;
+              vec2 hitXZ = localCam.xz + rd.xz * tHit;
+              vec2 hitRest = vec2(hitXZ.x * cs + hitXZ.y * sn, -hitXZ.x * sn + hitXZ.y * cs);
+              vec2 hitUV = hitRest / 18.8 + 0.5;
+              if (hitUV.x > 0.01 && hitUV.x < 0.99 && hitUV.y > 0.01 && hitUV.y < 0.99) {
+                vec4 hitDust = texture2D(uDustMap, hitUV);
+                dustSum += (hitDust.r * 1.45 + hitDust.g * 1.55) * 1.35;
+              }
+            }
+            if (aStarPop > 0.5 && aStarPop < 2.5) {
+              vec4 ownDust = texture2D(uDustMap, position.xz / 18.8 + 0.5);
+              dustSum += (ownDust.r * 1.15 + ownDust.g * 1.25) * 0.55;
+            }
+            if (dustSum > 0.005) {
+              vec3 starTrans = exp(-vec3(0.68, 1.40, 2.12) * dustSum * 1.35 * uDustOpacity);
+              vCol *= starTrans;
+            }
+          }
+        }
+
+        gl_Position = projectionMatrix * mvPos;
+        float basePt = aStarSize * (isForeground ? 210.0 : 175.0) / camDist * uPixelRatio;
+        float maxPt = vSpike > 0.05 ? mix(3.4, 12.5, vSpike) : (isForeground ? 3.2 : 2.35);
+        gl_PointSize = clamp(basePt + vSpike * 4.5, 1.0, maxPt);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      varying vec3 vCol;
+      varying float vAlpha;
+      varying float vSpike;
+
+      void main() {
+        vec2 p = gl_PointCoord - 0.5;
+        float r2 = dot(p, p);
+        if (vSpike <= 0.05 && r2 > 0.25) discard;
+        if (max(abs(p.x), abs(p.y)) > 0.495) discard;
+
+        float core = exp(-r2 * 64.0) + exp(-r2 * 16.0) * 0.28;
+        float disc = core * (1.0 - smoothstep(0.14, 0.25, r2));
+
+        float spikes = 0.0;
+        if (vSpike > 0.05) {
+          float edgeTaper = (1.0 - smoothstep(0.16, 0.48, abs(p.x))) * (1.0 - smoothstep(0.16, 0.48, abs(p.y)));
+          float sx = exp(-abs(p.y) * 38.0) * exp(-abs(p.x) * 7.5);
+          float sy = exp(-abs(p.x) * 38.0) * exp(-abs(p.y) * 7.5);
+          spikes = (sx + sy) * edgeTaper * vSpike * 0.55;
+        }
+
+        float a = clamp((disc + spikes) * vAlpha, 0.0, 0.95);
+        if (a < 0.004) discard;
+        gl_FragColor = vec4(vCol, a);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+}
+
+export function createDwarfEllipticalMaterial(isDiffuseM110: boolean): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uInvModelMatrix: { value: new THREE.Matrix4() },
+      uIsM110: { value: isDiffuseM110 ? 1.0 : 0.0 },
+    },
+    vertexShader: /* glsl */ `
+      uniform mat4 uInvModelMatrix;
+      varying vec3 vLocalPos;
+      varying vec3 vLocalCamPos;
+
+      void main() {
+        vLocalPos = position;
+        vLocalCamPos = (uInvModelMatrix * vec4(cameraPosition, 1.0)).xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform float uIsM110;
+      varying vec3 vLocalPos;
+      varying vec3 vLocalCamPos;
+
+      ${GLSL_COMET_NOISE}
+
+      void main() {
+        vec3 ro = vLocalCamPos;
+        vec3 toFrag = vLocalPos - vLocalCamPos;
+        float distToFrag = length(toFrag);
+        if (distToFrag < 0.001) discard;
+        vec3 rd = toFrag / distToFrag;
+
+        vec3 invRad = uIsM110 > 0.5
+          ? vec3(1.0 / 2.8, 1.0 / 4.8, 1.0 / 2.8)
+          : vec3(1.0 / 4.4, 1.0 / 3.8, 1.0 / 3.7);
+
+        vec3 roS = ro * invRad;
+        vec3 rdS = rd * invRad;
+        float a = dot(rdS, rdS);
+        float b = dot(roS, rdS);
+        float c = dot(roS, roS) - 1.0;
+        float disc = b * b - a * c;
+        if (disc <= 0.0) discard;
+
+        float sq = sqrt(disc);
+        float t0 = max(0.0, (-b - sq) / a);
+        float t1 = min(distToFrag, (-b + sq) / a);
+        if (t1 <= t0) discard;
+
+        const int STEPS = 26;
+        float ds = (t1 - t0) / float(STEPS);
+        float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+        float tStart = t0 + ds * jitter;
+
+        vec3 T = vec3(1.0);
+        vec3 accum = vec3(0.0);
+
+        for (int i = 0; i < STEPS; i++) {
+          float t = tStart + float(i) * ds;
+          vec3 p = ro + rd * t;
+          float ellipR = length(p * invRad);
+          float edgeFade = 1.0 - smoothstep(0.24, 0.86, ellipR);
+          if (edgeFade <= 0.001) continue;
+
+          float q = length(p);
+          vec3 emis;
+          vec3 ext = vec3(0.0);
+
+          if (uIsM110 > 0.5) {
+            float softHalo = exp(-ellipR * 3.65) * 0.21 * edgeFade;
+            float nucleus = exp(-q * 2.5) * 0.52 * edgeFade;
+            float youngBlue = exp(-q * 1.3) * (0.45 + 0.55 * cFbm2(p.xy * 1.6 + vec2(3.1, 8.2))) * 0.08 * edgeFade;
+
+            emis = vec3(0.78, 0.84, 0.96) * softHalo
+              + vec3(1.16, 1.10, 0.98) * nucleus
+              + vec3(0.60, 0.80, 1.16) * youngBlue;
+
+            float dDustA = length(p - vec3(0.28, 0.42, 0.14));
+            float dDustB = length(p - vec3(-0.34, -0.32, 0.18));
+            float dustPatch = (exp(-dDustA * dDustA * 18.0) + 0.75 * exp(-dDustB * dDustB * 22.0)) * (0.55 + 0.55 * cNoise2(p.xy * 6.5));
+            ext = vec3(0.72, 1.05, 1.48) * dustPatch * 0.85;
+          } else {
+            // M32 (NGC 221): silky smooth Sersic halo + warm creamy golden-ivory core
+            float halo = exp(-pow(max(ellipR, 0.02), 0.92) * 4.1) * 0.25 * edgeFade;
+            float denseCore = exp(-q * q * 3.8) * 1.32 * edgeFade;
+            emis = vec3(1.12, 0.93, 0.72) * halo + vec3(1.42, 1.30, 1.10) * denseCore;
+          }
+
+          vec3 stepT = exp(-ext * ds);
+          vec3 stepInteg = mix(vec3(ds), (1.0 - stepT) / max(ext, vec3(1e-4)), step(vec3(1e-4), ext));
+          accum += T * emis * stepInteg;
+          T *= stepT;
+        }
+
+        accum = accum / (1.0 + accum * 0.56);
+        float opacity = clamp(1.0 - dot(T, vec3(0.30, 0.52, 0.18)), 0.0, 0.86);
+        float radAlpha = clamp(max(accum.r, max(accum.g, accum.b)) * 0.88, 0.0, 0.84);
+        float finalAlpha = max(opacity, radAlpha);
+        if (finalAlpha < 0.003) discard;
+
+        gl_FragColor = vec4(accum, finalAlpha);
+      }
+    `,
+    side: THREE.BackSide,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.CustomBlending,
+    blendEquation: THREE.AddEquation,
+    blendSrc: THREE.OneFactor,
+    blendDst: THREE.OneMinusSrcAlphaFactor,
+    blendEquationAlpha: THREE.AddEquation,
+    blendSrcAlpha: THREE.ZeroFactor,
+    blendDstAlpha: THREE.OneFactor,
+  });
+}
+
+export function createDwarfEllipticalStarsMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uPixelRatio: { value: 1.25 },
+    },
+    vertexShader: /* glsl */ `
+      attribute vec3 aStarCol;
+      attribute float aStarSize;
+      uniform float uPixelRatio;
+      varying vec3 vCol;
+      varying float vReveal;
+
+      void main() {
+        vCol = aStarCol;
+        vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+        float camDist = max(6.0, -mvPos.z);
+        vReveal = 1.0 - smoothstep(55.0, 145.0, camDist);
+        gl_Position = projectionMatrix * mvPos;
+        gl_PointSize = clamp(aStarSize * (160.0 / camDist) * uPixelRatio, 1.1, 3.6);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      varying vec3 vCol;
+      varying float vReveal;
+      void main() {
+        if (vReveal < 0.01) discard;
+        vec2 p = gl_PointCoord - 0.5;
+        float r2 = dot(p, p);
+        if (r2 > 0.25) discard;
+        float core = exp(-r2 * 44.0) + exp(-r2 * 14.0) * 0.35;
+        float a = clamp(core * (1.0 - smoothstep(0.14, 0.25, r2)) * 0.78 * vReveal, 0.0, 0.90);
+        if (a < 0.005) discard;
+        gl_FragColor = vec4(vCol, a);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
   });
 }

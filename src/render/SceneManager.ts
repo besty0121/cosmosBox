@@ -566,12 +566,69 @@ export class SceneManager {
     if (zoomCloser) {
       const vis = this.bodyRenderer.getVisual(id);
       const r = vis ? Math.max(vis.renderedRadius, 0.12) : 2;
-      const mult = body.hasRings ? 5.0 : body.category === 'black_hole' ? 14.5 : 3.2;
+      const mult = body.galaxyType === 'andromeda'
+        ? 18.0
+        : body.galaxyType === 'dwarf_elliptical_compact'
+          ? 12.5
+          : body.galaxyType === 'dwarf_elliptical_diffuse'
+            ? 11.0
+            : body.isGravitationalLens
+              ? 34.0
+              : body.isLensSource
+                ? 6.2
+                : body.hasRings
+                  ? 5.0
+                  : body.category === 'black_hole'
+                    ? 14.5
+                    : 3.2;
       const desiredDist = Math.max(r * mult, this.scaleMode === 'real' ? r * 3.8 : 2.6);
-      const dir = this.camera.position.clone().normalize();
-      if (dir.lengthSq() < 0.01) dir.set(0.35, 0.28, 0.89).normalize();
+      const dir = new THREE.Vector3();
+      const srcBody = body.isGravitationalLens
+        ? this.engine.bodies.find((b) => b.alive && b.isLensSource)
+        : undefined;
+      if (srcBody) {
+        dir.set(
+          body.position.x - srcBody.position.x,
+          body.position.y - srcBody.position.y,
+          body.position.z - srcBody.position.z
+        );
+      }
+      if (dir.lengthSq() < 1e-6) {
+        dir.copy(this.camera.position);
+      }
+      if (dir.lengthSq() < 0.01) dir.set(0.35, 0.28, 0.89);
+      dir.normalize();
       this.camera.position.copy(dir.multiplyScalar(desiredDist));
     }
+    this.controls.update();
+  }
+
+  public setAndromedaViewPreset(preset: 'earth' | 'face_on' | 'edge_on' | 'core'): void {
+    const m31 = this.engine.bodies.find((b) => b.alive && b.galaxyType === 'andromeda');
+    if (!m31) return;
+
+    this.focusBodyId = m31.id;
+    this.selectedBodyId = m31.id;
+    this.originMeters = { ...m31.position };
+    this.controls.target.set(0, 0, 0);
+
+    const galQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.25, 0.0, -0.56, 'ZYX'));
+    if (preset === 'earth') {
+      this.camera.position.set(0, 0, 243);
+    } else if (preset === 'face_on') {
+      this.camera.position.copy(
+        new THREE.Vector3(0, 1, 0.04).normalize().applyQuaternion(galQuat).multiplyScalar(255)
+      );
+    } else if (preset === 'edge_on') {
+      this.camera.position.copy(
+        new THREE.Vector3(0, 0.025, 1).normalize().applyQuaternion(galQuat).multiplyScalar(245)
+      );
+    } else {
+      this.camera.position.copy(
+        new THREE.Vector3(0.14, 0.42, 0.89).normalize().applyQuaternion(galQuat).multiplyScalar(52)
+      );
+    }
+    this.camera.up.set(0, 1, 0);
     this.controls.update();
   }
 
@@ -1301,9 +1358,13 @@ export class SceneManager {
             color: b.category === 'black_hole' ? '#ff9640' : b.color,
             selected: b.id === this.selectedBodyId,
             subtitle:
-              b.category === 'black_hole'
-                ? '黑洞'
-                : `${Math.round(b.temperature)} K`,
+              b.galaxyType === 'andromeda'
+                ? '旋涡星系 SA(s)b'
+                : b.galaxyType
+                  ? '矮椭圆伴星系'
+                  : b.category === 'black_hole'
+                    ? '黑洞'
+                    : `${Math.round(b.temperature)} K`,
           });
         }
         this.callbacks.onLabelsUpdate(projected);

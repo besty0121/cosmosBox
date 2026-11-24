@@ -76,6 +76,7 @@ export function InspectorPanel() {
   const updateBodyProps = useCosmosStore((s) => s.updateBodyProps);
   const triggerBodySupernova = useCosmosStore((s) => s.triggerBodySupernova);
   const launchSolarCME = useCosmosStore((s) => s.launchSolarCME);
+  const setAndromedaViewPreset = useCosmosStore((s) => s.setAndromedaViewPreset);
 
   const body = selectedBodyId ? bodies.find((b) => b.id === selectedBodyId) ?? null : null;
 
@@ -147,7 +148,13 @@ export function InspectorPanel() {
               {body.name}
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-              {body.spectralClass ?? CATEGORY_LABELS[body.category]}
+              {body.galaxyType === 'andromeda'
+                ? '旋涡星系 · SA(s)b (NGC 224)'
+                : body.galaxyType === 'dwarf_elliptical_compact'
+                  ? '致密矮椭圆伴星系 · cE2 (NGC 221)'
+                  : body.galaxyType === 'dwarf_elliptical_diffuse'
+                    ? '矮椭圆伴星系 · dE5 pec (NGC 205)'
+                    : (body.spectralClass ?? CATEGORY_LABELS[body.category])}
             </div>
           </div>
         </div>
@@ -221,7 +228,7 @@ export function InspectorPanel() {
           </div>
         )}
 
-        {body.category === 'rocky' && body.habitability > 0 && (
+        {!body.galaxyType && body.category === 'rocky' && body.habitability > 0 && (
           <div className="status-banner habitable">
             <Leaf size={13} />
             <span>行星宜居指数：{body.habitability}%</span>
@@ -245,7 +252,7 @@ export function InspectorPanel() {
             <Focus size={13} />
             拉近观察
           </button>
-          {body.category !== 'star' && body.category !== 'black_hole' && (
+          {!body.galaxyType && body.category !== 'star' && body.category !== 'black_hole' && (
             <button
               className="hud-btn active"
               onClick={() => enterSurfaceView(body.id)}
@@ -266,62 +273,97 @@ export function InspectorPanel() {
         </div>
 
         {/* Core telemetry readout */}
-        <div className="stat-grid">
-          <div className="stat-card">
-            <div className="stat-label">质量</div>
-            <div className="stat-value mono">{formatMass(body.mass)}</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-label">
-              {body.category === 'black_hole' ? '史瓦西半径' : '物理半径'}
+        {body.galaxyType ? (
+          <div className="stat-grid">
+            <div className="stat-card">
+              <div className="stat-label">总质量</div>
+              <div className="stat-value mono">{formatMass(body.mass)}</div>
             </div>
-            <div className="stat-value mono">{formatRadius(body.radius)}</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-label">运动速度</div>
-            <div className="stat-value mono">{(body.speed / 1000).toFixed(2)} km/s</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-label">
-              {body.category === 'black_hole'
-                ? '吸积活跃度'
-                : body.category === 'star'
-                  ? '辐射光度'
-                  : '平均密度'}
+            <div className="stat-card">
+              <div className="stat-label">星系半径</div>
+              <div className="stat-value mono">{formatRadius(body.radius)}</div>
             </div>
-            <div className="stat-value mono">
-              {body.category === 'black_hole'
-                ? `${Math.round(body.accretionFlare * 100)}%`
-                : body.category === 'star'
-                  ? `${(body.luminosity / L_SUN).toFixed(2)} L☉`
-                  : `${densityGCm3 > 1000 ? densityGCm3.toExponential(1) : densityGCm3.toFixed(2)} g/cm³`}
-            </div>
-          </div>
-          <div className="stat-card" style={{ gridColumn: '1 / -1' }}>
-            <div className="stat-label">
-              {body.category === 'black_hole'
-                ? '事件视界状态'
-                : `表面温度 ${autoThermo && body.category !== 'star' && body.category !== 'neutron_star' ? `（辐射平衡 ≈ ${Math.round(body.equilibriumTemp)} K）` : ''}`}
-            </div>
-            <div className="stat-value mono">
-              {body.category === 'black_hole'
-                ? '引力奇点 · 相对论吸积盘'
-                : `${Math.round(body.temperature)} K (${Math.round(tempC)}°C)`}
-            </div>
-          </div>
-          {body.distanceToPrimaryAU !== null && (
-            <div className="stat-card" style={{ gridColumn: '1 / -1' }}>
-              <div className="stat-label">距主引力源（{body.primaryName}）</div>
+            <div className="stat-card">
+              <div className="stat-label">物理直径</div>
               <div className="stat-value mono">
-                {body.distanceToPrimaryAU < 0.05
-                  ? `${Math.round(body.distanceToPrimaryAU * 1.496e8).toLocaleString()} km`
-                  : `${body.distanceToPrimaryAU.toFixed(3)} AU`}
+                {body.galaxyType === 'andromeda'
+                  ? '15.2 万光年'
+                  : body.galaxyType === 'dwarf_elliptical_compact'
+                    ? '6,500 光年'
+                    : '1.7 万光年'}
               </div>
             </div>
-          )}
-        </div>
+            <div className="stat-card">
+              <div className="stat-label">距地球</div>
+              <div className="stat-value mono">
+                {body.galaxyType === 'andromeda'
+                  ? '254 万光年'
+                  : body.galaxyType === 'dwarf_elliptical_compact'
+                    ? '249 万光年'
+                    : '269 万光年'}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="stat-grid">
+            <div className="stat-card">
+              <div className="stat-label">质量</div>
+              <div className="stat-value mono">{formatMass(body.mass)}</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">
+                {body.category === 'black_hole' ? '史瓦西半径' : '物理半径'}
+              </div>
+              <div className="stat-value mono">{formatRadius(body.radius)}</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">运动速度</div>
+              <div className="stat-value mono">{(body.speed / 1000).toFixed(2)} km/s</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">
+                {body.category === 'black_hole'
+                  ? '吸积活跃度'
+                  : body.category === 'star'
+                    ? '辐射光度'
+                    : '平均密度'}
+              </div>
+              <div className="stat-value mono">
+                {body.category === 'black_hole'
+                  ? `${Math.round(body.accretionFlare * 100)}%`
+                  : body.category === 'star'
+                    ? `${(body.luminosity / L_SUN).toFixed(2)} L☉`
+                    : `${densityGCm3 > 1000 ? densityGCm3.toExponential(1) : densityGCm3.toFixed(2)} g/cm³`}
+              </div>
+            </div>
+            <div className="stat-card" style={{ gridColumn: '1 / -1' }}>
+              <div className="stat-label">
+                {body.category === 'black_hole'
+                  ? '事件视界状态'
+                  : `表面温度 ${autoThermo && body.category !== 'star' && body.category !== 'neutron_star' ? `（辐射平衡 ≈ ${Math.round(body.equilibriumTemp)} K）` : ''}`}
+              </div>
+              <div className="stat-value mono">
+                {body.category === 'black_hole'
+                  ? '引力奇点 · 相对论吸积盘'
+                  : `${Math.round(body.temperature)} K (${Math.round(tempC)}°C)`}
+              </div>
+            </div>
+            {body.distanceToPrimaryAU !== null && (
+              <div className="stat-card" style={{ gridColumn: '1 / -1' }}>
+                <div className="stat-label">距主引力源（{body.primaryName}）</div>
+                <div className="stat-value mono">
+                  {body.distanceToPrimaryAU < 0.05
+                    ? `${Math.round(body.distanceToPrimaryAU * 1.496e8).toLocaleString()} km`
+                    : `${body.distanceToPrimaryAU.toFixed(3)} AU`}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Mass & Radius Exact Editor */}
+        {!body.galaxyType && (
+        <>
         <div className="control-section">
           <div className="section-title">质量与尺寸（精确编辑）</div>
           <div className="btn-row">
@@ -600,6 +642,160 @@ export function InspectorPanel() {
             )}
           </div>
         )}
+        </>
+        )}
+
+        {/* Andromeda Galaxy (M31) & Satellites Observatory Panel */}
+        {body.galaxyType && (() => {
+          const dustVal = body.galaxyDustOpacity ?? 1.0;
+          const specMode = body.galaxySpectrumMode ?? 'optical';
+          const isM31 = body.galaxyType === 'andromeda';
+          const isM32 = body.galaxyType === 'dwarf_elliptical_compact';
+          return (
+            <div className="control-section">
+              <div className="section-title">
+                {isM31 ? '仙女座星系观测台' : '矮椭圆伴星系观测档案'}
+              </div>
+
+              <div className="stat-grid" style={{ marginBottom: 8 }}>
+                {isM31 ? (
+                  <>
+                    <div className="stat-card" style={{ gridColumn: '1 / -1' }}>
+                      <div className="stat-label">观测几何与距离</div>
+                      <div className="stat-value mono" style={{ fontSize: 11.5 }}>
+                        距地球 254 万光年 (778 kpc) · 倾角 77° · PA 38°
+                      </div>
+                    </div>
+                    <div className="stat-card" style={{ gridColumn: '1 / -1' }}>
+                      <div className="stat-label">银心特征</div>
+                      <div className="stat-value" style={{ fontSize: 11.5 }}>
+                        P1/P2 双星核 · M31* ≈ 1.4×10⁸ M☉
+                      </div>
+                    </div>
+                    <div className="stat-card" style={{ gridColumn: '1 / -1' }}>
+                      <div className="stat-label">标志性结构</div>
+                      <div className="stat-value" style={{ fontSize: 11.5 }}>
+                        10 kpc 恒星形成环 · 巨星云 NGC 206 · 约 1 万亿颗恒星
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="stat-card" style={{ gridColumn: '1 / -1' }}>
+                      <div className="stat-label">形态分类</div>
+                      <div className="stat-value" style={{ fontSize: 11.5 }}>
+                        {isM32 ? 'cE2 致密椭圆星系 (NGC 221)' : 'dE5 pec 矮椭圆星系 (NGC 205)'}
+                      </div>
+                    </div>
+                    <div className="stat-card" style={{ gridColumn: '1 / -1' }}>
+                      <div className="stat-label">天体物理特征</div>
+                      <div className="stat-value" style={{ fontSize: 11.5, lineHeight: 1.4 }}>
+                        {isM32
+                          ? '核球恒星极度致密，外层包层疑在与 M31 的近距潮汐交汇中被剥离'
+                          : '外包层柔和延展，核周保有微弱暗尘埃云团与年轻蓝星群，与 M31 存在潮汐互动'}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {isM31 ? (
+                <>
+                  <div className="section-title" style={{ marginTop: 8 }}>多波段观测</div>
+                  <div className="btn-row" style={{ marginBottom: 8 }}>
+                    <button
+                      className={`hud-btn ${specMode === 'optical' ? 'active' : ''}`}
+                      style={{ flex: 1, justifyContent: 'center', fontSize: 11.5 }}
+                      onClick={() => updateBodyProps(body.id, { galaxySpectrumMode: 'optical' })}
+                    >
+                      光学实拍
+                    </button>
+                    <button
+                      className={`hud-btn ${specMode === 'infrared' ? 'active' : ''}`}
+                      style={{ flex: 1, justifyContent: 'center', fontSize: 11.5 }}
+                      onClick={() => updateBodyProps(body.id, { galaxySpectrumMode: 'infrared' })}
+                    >
+                      红外尘埃环
+                    </button>
+                    <button
+                      className={`hud-btn ${specMode === 'ultraviolet' ? 'active' : ''}`}
+                      style={{ flex: 1, justifyContent: 'center', fontSize: 11.5 }}
+                      onClick={() => updateBodyProps(body.id, { galaxySpectrumMode: 'ultraviolet' })}
+                    >
+                      紫外星环
+                    </button>
+                  </div>
+
+                  <div className="slider-row">
+                    <div className="slider-header">
+                      <span>尘埃消光带浓度</span>
+                      <span className="mono" style={{ color: '#e6b88a' }}>
+                        {Math.round(dustVal * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      className="cosmos-slider"
+                      min={0}
+                      max={1.8}
+                      step={0.05}
+                      value={dustVal}
+                      onChange={(e) =>
+                        updateBodyProps(body.id, { galaxyDustOpacity: parseFloat(e.target.value) })
+                      }
+                    />
+                  </div>
+
+                  <div className="section-title" style={{ marginTop: 8 }}>天文快捷视角</div>
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1fr 1fr',
+                      gap: 6,
+                    }}
+                  >
+                    <button
+                      className="hud-btn"
+                      style={{ justifyContent: 'center', fontSize: 11.5 }}
+                      onClick={() => setAndromedaViewPreset('earth')}
+                    >
+                      🔭 地球视角 (77°)
+                    </button>
+                    <button
+                      className="hud-btn"
+                      style={{ justifyContent: 'center', fontSize: 11.5 }}
+                      onClick={() => setAndromedaViewPreset('face_on')}
+                    >
+                      🛸 俯视星系盘
+                    </button>
+                    <button
+                      className="hud-btn"
+                      style={{ justifyContent: 'center', fontSize: 11.5 }}
+                      onClick={() => setAndromedaViewPreset('edge_on')}
+                    >
+                      🌌 侧视尘埃带
+                    </button>
+                    <button
+                      className="hud-btn"
+                      style={{ justifyContent: 'center', fontSize: 11.5 }}
+                      onClick={() => setAndromedaViewPreset('core')}
+                    >
+                      🔬 深入双星核
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <button
+                  className="hud-btn active"
+                  style={{ width: '100%', justifyContent: 'center' }}
+                  onClick={() => setAndromedaViewPreset('earth')}
+                >
+                  🔭 返回仙女座全貌 (77° 地球视角)
+                </button>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Gravitational Lensing Controls (Einstein Ring <-> 4-Image Einstein Cross) */}
         {body.isGravitationalLens && (() => {

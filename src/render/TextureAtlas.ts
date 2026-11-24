@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { CelestialBody } from '../types/cosmos';
+import { AndromedaDiskMaps, bakeAndromedaDiskMaps } from './AndromedaBaker';
 
 export interface PlanetTextures {
   earthDay: THREE.Texture;
@@ -22,9 +23,12 @@ export interface PlanetTextures {
 
 class TextureAtlasManager {
   private textures: PlanetTextures | null = null;
+  private renderer: THREE.WebGLRenderer | null = null;
+  private andromedaMaps: AndromedaDiskMaps | null = null;
   private loader = new THREE.TextureLoader();
 
   public init(renderer: THREE.WebGLRenderer): PlanetTextures {
+    this.renderer = renderer;
     if (this.textures) return this.textures;
 
     const maxAniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
@@ -69,6 +73,13 @@ class TextureAtlasManager {
 
   public get(): PlanetTextures | null {
     return this.textures;
+  }
+
+  public getAndromedaMaps(): AndromedaDiskMaps | null {
+    if (!this.andromedaMaps && this.renderer) {
+      this.andromedaMaps = bakeAndromedaDiskMaps(this.renderer, 2048);
+    }
+    return this.andromedaMaps;
   }
 
   /**

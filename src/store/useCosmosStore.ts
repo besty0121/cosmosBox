@@ -29,6 +29,7 @@ import {
   CameraMode,
   CmeImpactEvent,
   CollisionEvent,
+  GalaxySpectrumMode,
   KilonovaEvent,
   LaunchMode,
   ScaleMode,
@@ -136,10 +137,13 @@ interface CosmosState {
       atmosphereDensity: number;
       auroraIntensity: number;
       lensShear: number;
+      galaxyDustOpacity: number;
+      galaxySpectrumMode: GalaxySpectrumMode;
       rotationHours: number;
       axialTiltDeg: number;
     }>
   ) => void;
+  setAndromedaViewPreset: (preset: 'earth' | 'face_on' | 'edge_on' | 'core') => void;
   triggerBodySupernova: (id: string) => void;
   launchSolarCME: (starId?: string, mode?: 'random' | 'target') => void;
 
@@ -451,6 +455,22 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
     get().sceneManager?.exitSpecialCameraMode(true);
   },
 
+  setAndromedaViewPreset: (preset) => {
+    const { engine, sceneManager } = get();
+    if (!engine || !sceneManager) return;
+    sceneManager.exitSpecialCameraMode(false);
+    const m31 = engine.bodies.find((b) => b.alive && b.galaxyType === 'andromeda');
+    sceneManager.setAndromedaViewPreset(preset);
+    if (m31) {
+      set({
+        focusBodyId: m31.id,
+        selectedBodyId: m31.id,
+        cameraMode: 'orbit',
+        cameraTargetName: null,
+      });
+    }
+  },
+
   deleteBody: (id) => {
     const { engine, sceneManager, selectedBodyId, focusBodyId } = get();
     if (!engine || !sceneManager) return;
@@ -591,6 +611,8 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
     if (patch.atmosphereDensity !== undefined) body.atmosphereDensity = patch.atmosphereDensity;
     if (patch.auroraIntensity !== undefined) body.auroraIntensity = patch.auroraIntensity;
     if (patch.lensShear !== undefined) body.lensShear = patch.lensShear;
+    if (patch.galaxyDustOpacity !== undefined) body.galaxyDustOpacity = patch.galaxyDustOpacity;
+    if (patch.galaxySpectrumMode !== undefined) body.galaxySpectrumMode = patch.galaxySpectrumMode;
     if (patch.rotationHours !== undefined) {
       body.rotationPeriod = Math.max(0.5, patch.rotationHours) * HOUR;
     }

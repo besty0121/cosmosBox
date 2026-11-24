@@ -32,7 +32,11 @@ export function computeAccelerations(bodies: CelestialBody[]): number {
       if (!bj.alive) continue;
       // Cosmological gravitational-lensing background sources lie billions of light-years behind the lens
       // (skip local close-range Newtonian collapse between foreground lens & distant background galaxy)
-      if ((bi.isGravitationalLens && bj.isLensSource) || (bj.isGravitationalLens && bi.isLensSource)) {
+      if (
+        (bi.isGravitationalLens && bj.isLensSource) ||
+        (bj.isGravitationalLens && bi.isLensSource) ||
+        (bi.galaxyType && bj.galaxyType)
+      ) {
         continue;
       }
 

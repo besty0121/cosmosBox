@@ -34,7 +34,14 @@ export function resolveCollisions(
     for (let j = i + 1; j < n; j++) {
       const b = bodies[j];
       if (!b.alive) continue;
-      if (a.isGravitationalLens || b.isGravitationalLens || a.isLensSource || b.isLensSource) {
+      if (
+        a.isGravitationalLens ||
+        b.isGravitationalLens ||
+        a.isLensSource ||
+        b.isLensSource ||
+        a.galaxyType ||
+        b.galaxyType
+      ) {
         continue;
       }
 
@@ -264,12 +271,19 @@ export function resolveRocheTidalTearing(
     // Black holes & neutron stars do not tidally disrupt from normal planets/stars
     if (victim.category === 'black_hole' || victim.category === 'neutron_star') continue;
     // White dwarfs are degenerate compact stars; stars near black holes are handled by gradual TDE spaghettification
-    if (victim.isWhiteDwarf || victim.isLensSource || victim.isGravitationalLens) continue;
+    if (
+      victim.isWhiteDwarf ||
+      victim.isLensSource ||
+      victim.isGravitationalLens ||
+      victim.galaxyType
+    ) {
+      continue;
+    }
 
     for (let j = 0; j < n; j++) {
       if (i === j) continue;
       const primary = bodies[j];
-      if (!primary.alive) continue;
+      if (!primary.alive || primary.galaxyType) continue;
       // Stars torn by black holes are handled by gradual TDE spaghettification stream in SimulationEngine
       if (victim.category === 'star' && primary.category === 'black_hole') continue;
       // Primary must be significantly heavier to tear victim apart

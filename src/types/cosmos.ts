@@ -17,6 +17,13 @@ export type BodyCategory =
 
 export type ScaleMode = 'playable' | 'real';
 
+export type GalaxyVisualType =
+  | 'andromeda'
+  | 'dwarf_elliptical_compact'
+  | 'dwarf_elliptical_diffuse';
+
+export type GalaxySpectrumMode = 'optical' | 'infrared' | 'ultraviolet';
+
 export type LaunchMode = 'orbit' | 'slingshot' | 'stationary';
 
 export type CameraMode = 'orbit' | 'surface' | 'cinematic';
@@ -77,6 +84,12 @@ export interface CelestialBody {
   lensShear?: number;
   /** Marks the primary distant background galaxy/quasar target for interactive gravitational lensing */
   isLensSource?: boolean;
+  /** Marks a 3D volumetric galaxy assembly (Andromeda M31 and its satellites M32/M110) */
+  galaxyType?: GalaxyVisualType;
+  /** Dust absorption lane optical depth multiplier [0..1.8] for spiral galaxies */
+  galaxyDustOpacity?: number;
+  /** Multi-wavelength observation filter for galaxy visualization */
+  galaxySpectrumMode?: GalaxySpectrumMode;
 
   // Rotation & visual appearance
   /** Sidereal rotation period in seconds */
@@ -295,6 +308,9 @@ export interface BodySnapshot {
   isWhiteDwarf?: boolean;
   isGravitationalLens?: boolean;
   lensShear?: number;
+  galaxyType?: GalaxyVisualType;
+  galaxyDustOpacity?: number;
+  galaxySpectrumMode?: GalaxySpectrumMode;
   jupiterTorus?: boolean;
   volcanicIo?: boolean;
   rotationPeriod: number;

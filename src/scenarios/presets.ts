@@ -4,6 +4,7 @@ import {
   G,
   HOUR,
   L_SUN,
+  LY,
   M_EARTH,
   M_JUPITER,
   M_MOON,
@@ -1683,6 +1684,98 @@ function createEinsteinRingLensing(): CelestialBody[] {
   return [foregroundLens, backgroundSource];
 }
 
+function createAndromedaGalaxy(): CelestialBody[] {
+  const m31: CelestialBody = {
+    id: nextBodyId('m31'),
+    name: '仙女座星系 (M31)',
+    category: 'rocky',
+    galaxyType: 'andromeda',
+    galaxyDustOpacity: 1.0,
+    galaxySpectrumMode: 'optical',
+    mass: 1.5e12 * M_SUN,
+    radius: 7.6e4 * LY,
+    position: { x: 0, y: 0, z: 0 },
+    velocity: { x: 0, y: 0, z: 0 },
+    acceleration: { x: 0, y: 0, z: 0 },
+    temperature: 4400,
+    luminosity: 0,
+    albedo: 0,
+    greenhouse: 0,
+    waterFraction: 0,
+    atmosphereDensity: 0,
+    impactHeat: 0,
+    rotationPeriod: 1000 * DAY,
+    rotationAngle: 0,
+    axialTilt: 0,
+    color: '#f7dec0',
+    secondaryColor: '#76a4e8',
+    atmosphereColor: '#000000',
+    seed: 3101,
+    trail: [],
+    alive: true,
+  };
+
+  const m32: CelestialBody = {
+    id: nextBodyId('m32'),
+    name: 'M32 矮椭圆伴星系 (NGC 221)',
+    category: 'rocky',
+    galaxyType: 'dwarf_elliptical_compact',
+    mass: 3.0e9 * M_SUN,
+    radius: 3250 * LY,
+    position: { x: -0.085 * AU, y: 0.255 * AU, z: 0.11 * AU },
+    velocity: { x: 0, y: 0, z: 0 },
+    acceleration: { x: 0, y: 0, z: 0 },
+    temperature: 4500,
+    luminosity: 0,
+    albedo: 0,
+    greenhouse: 0,
+    waterFraction: 0,
+    atmosphereDensity: 0,
+    impactHeat: 0,
+    rotationPeriod: 1000 * DAY,
+    rotationAngle: 0,
+    axialTilt: 0,
+    color: '#fff1d6',
+    secondaryColor: '#e2bd8c',
+    atmosphereColor: '#000000',
+    parentId: m31.id,
+    seed: 3102,
+    trail: [],
+    alive: true,
+  };
+
+  const m110: CelestialBody = {
+    id: nextBodyId('m110'),
+    name: 'M110 矮椭圆伴星系 (NGC 205)',
+    category: 'rocky',
+    galaxyType: 'dwarf_elliptical_diffuse',
+    mass: 1.0e10 * M_SUN,
+    radius: 8500 * LY,
+    position: { x: -0.175 * AU, y: -0.455 * AU, z: -0.14 * AU },
+    velocity: { x: 0, y: 0, z: 0 },
+    acceleration: { x: 0, y: 0, z: 0 },
+    temperature: 5200,
+    luminosity: 0,
+    albedo: 0,
+    greenhouse: 0,
+    waterFraction: 0,
+    atmosphereDensity: 0,
+    impactHeat: 0,
+    rotationPeriod: 1000 * DAY,
+    rotationAngle: 0,
+    axialTilt: 0,
+    color: '#dce5f8',
+    secondaryColor: '#b7c4e0',
+    atmosphereColor: '#000000',
+    parentId: m31.id,
+    seed: 3103,
+    trail: [],
+    alive: true,
+  };
+
+  return [m31, m32, m110];
+}
+
 function createEmptySandbox(): CelestialBody[] {
   return [];
 }
@@ -1716,6 +1809,16 @@ export const SCENARIOS: ScenarioDefinition[] = [
     defaultFocusBodyName: '前景引力透镜星系团',
     defaultCameraAngles: { azimuthDeg: 0, elevationDeg: 0 },
     createBodies: createEinsteinRingLensing,
+  },
+  {
+    id: 'andromeda_galaxy',
+    name: '🌌 仙女座星系 (M31)',
+    description: '基于哈勃 PHAT 全景观测打造：15.2 万光年壮丽 SA(s)b 旋涡星系，立体呈现 77° 倾角、10 kpc 恒星形成环、双星核 P1/P2、多层三维暗尘埃消光带及 M32、M110 矮椭圆伴星系。',
+    defaultTimeScale: 0.8 * DAY,
+    defaultCameraDistanceAU: 1.52,
+    defaultFocusBodyName: '仙女座星系 (M31)',
+    defaultCameraAngles: { azimuthDeg: 0, elevationDeg: 0 },
+    createBodies: createAndromedaGalaxy,
   },
   {
     id: 'earth_aurora',

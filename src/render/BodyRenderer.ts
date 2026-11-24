@@ -2,12 +2,16 @@ import * as THREE from 'three';
 import { AU, L_SUN, M_SUN, METERS_TO_SCENE, R_EARTH, R_SUN } from '../physics/constants';
 import { CelestialBody, CmeWave, ScaleMode, Vec3 } from '../types/cosmos';
 import {
+  createAndromedaStarsMaterial,
+  createAndromedaVolumeMaterial,
   createAtmosphereMaterial,
   createBlackHoleLensingMaterial,
   createCloudLayerMaterial,
   createCometComaMaterial,
   createCometParticleStreamMaterial,
   createCometRibbonMaterial,
+  createDwarfEllipticalMaterial,
+  createDwarfEllipticalStarsMaterial,
   createEarthAuroraMaterial,
   createGravitationalLensMaterial,
   createIoSurfaceMaterial,
@@ -16,6 +20,9 @@ import {
   createPulsarJetMaterial,
   createRingMaterial,
   createSolarCoronaMaterial,
+  createSourceGalaxyBulgeMaterial,
+  createSourceGalaxyDiscMaterial,
+  createSourceGalaxyStarsMaterial,
   createStarMaterial,
   createTexturedEarthMaterial,
   createTexturedGasGiantMaterial,
@@ -113,6 +120,337 @@ export const SHARED_PROMINENCE_GEO = buildProminenceCurtainGeometry();
 const SHARED_EARTH_AURORA_GEO = new THREE.SphereGeometry(1.09, 48, 36);
 const SHARED_JUPITER_AURORA_GEO = new THREE.SphereGeometry(1.038, 48, 36);
 const SHARED_LENS_VOLUME_GEO = new THREE.SphereGeometry(22.0, 48, 32);
+const SHARED_SOURCE_GALAXY_DISC_GEO = new THREE.PlaneGeometry(5.6, 5.6);
+const SHARED_SOURCE_GALAXY_BULGE_GEO = new THREE.SphereGeometry(0.95, 32, 24);
+
+function buildSourceGalaxyStarsGeometry(count = 1400): THREE.BufferGeometry {
+  const positions = new Float32Array(count * 3);
+  const colors = new Float32Array(count * 3);
+  const sizes = new Float32Array(count);
+
+  let s = 9021;
+  const rand = () => {
+    s = (s * 16807) % 2147483647;
+    return (s - 1) / 2147483646;
+  };
+  const gauss = () => (rand() + rand() + rand() - 1.5) * 0.66;
+
+  const colBlue = new THREE.Color('#72b8ff');
+  const colRose = new THREE.Color('#ff66b2');
+  const colGold = new THREE.Color('#ffd28a');
+  const tmpCol = new THREE.Color();
+
+  for (let i = 0; i < count; i++) {
+    let x: number;
+    let y: number;
+    let z: number;
+
+    if (i < count * 0.25) {
+      // 25% golden-ivory bulge stars with genuine 3D spheroid vertical thickness
+      const r = Math.pow(rand(), 1.8) * 0.85;
+      const ang = rand() * Math.PI * 2;
+      x = Math.cos(ang) * r;
+      y = Math.sin(ang) * r;
+      z = gauss() * 0.28 * (1.0 - 0.45 * (r / 0.85));
+      tmpCol.copy(colGold);
+      sizes[i] = 1.0 + rand() * 1.1;
+    } else {
+      // 75% spiral-arm stars aligned directly with twin logarithmic spiral arms
+      const armIdx = i % 2;
+      const rNorm = 0.09 + Math.pow(rand(), 1.15) * 0.66; // -> 0.25..2.10 in world plane units
+      const rPlane = rNorm * 2.8;
+      const armAngle = armIdx * Math.PI + Math.log(Math.max(rNorm, 0.04)) * 2.6 + gauss() * 0.34;
+      x = Math.cos(armAngle) * rPlane;
+      y = Math.sin(armAngle) * rPlane;
+      z = gauss() * 0.14 * (1.0 - 0.35 * rNorm);
+
+      if (rand() < 0.18) {
+        tmpCol.copy(colRose);
+        sizes[i] = 1.5 + rand() * 1.5;
+      } else {
+        tmpCol.copy(colBlue);
+        if (rNorm < 0.3) {
+          tmpCol.lerp(colGold, (0.3 - rNorm) / 0.3);
+        }
+        sizes[i] = 1.2 + rand() * 1.5;
+      }
+    }
+
+    positions[i * 3] = x;
+    positions[i * 3 + 1] = y;
+    positions[i * 3 + 2] = z;
+    colors[i * 3] = tmpCol.r;
+    colors[i * 3 + 1] = tmpCol.g;
+    colors[i * 3 + 2] = tmpCol.b;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('aStarCol', new THREE.BufferAttribute(colors, 3));
+  geo.setAttribute('aStarSize', new THREE.BufferAttribute(sizes, 1));
+  return geo;
+}
+
+const SHARED_SOURCE_GALAXY_STARS_GEO = buildSourceGalaxyStarsGeometry(1400);
+const SHARED_ANDROMEDA_VOLUME_GEO = new THREE.SphereGeometry(10.5, 44, 30);
+const SHARED_DWARF_ELLIPTICAL_GEO = new THREE.SphereGeometry(5.2, 32, 22);
+
+function createGalaxyPrng(seed: number) {
+  let s = seed | 0;
+  const rand = () => {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const gauss = () => (rand() + rand() + rand() - 1.5) * 0.66;
+  return { rand, gauss };
+}
+
+function buildAndromedaStarsGeometry(count = 52000): THREE.BufferGeometry {
+  const positions = new Float32Array(count * 3);
+  const colors = new Float32Array(count * 3);
+  const sizes = new Float32Array(count);
+  const pops = new Float32Array(count);
+
+  const { rand, gauss } = createGalaxyPrng(1031);
+
+  const colBulgePeach = new THREE.Color('#ffd3a6');
+  const colBulgeIvory = new THREE.Color('#fff2de');
+  const colWarmDisk = new THREE.Color('#ffc996');
+  const colArmCobalt = new THREE.Color('#7eb8ff');
+  const colSapphire = new THREE.Color('#cce4ff');
+  const colH2Ruby = new THREE.Color('#ff3c6e');
+  const colFgAmber = new THREE.Color('#ffc478');
+  const colFgGold = new THREE.Color('#ffe2b4');
+  const colFgWhite = new THREE.Color('#f5f8ff');
+  const colFgBlue = new THREE.Color('#9bc4ff');
+  const tmpCol = new THREE.Color();
+
+  // Pre-build 160 compact OB star-cloud micro-associations aligned to M31's flocculent arms & patchy 10 kpc ring
+  const microClusters: Array<{ x: number; z: number; sigma: number; rNorm: number }> = [];
+  for (let k = 0; k < 160; k++) {
+    const onRing = k % 3 !== 0;
+    const rN = onRing ? Math.min(0.86, Math.max(0.42, 0.60 + gauss() * 0.11)) : 0.24 + Math.pow(rand(), 0.95) * 0.62;
+    const logR = Math.log(rN + 0.11);
+    let ang: number;
+    if (onRing && rand() < 0.45) {
+      ang = rand() * Math.PI * 2;
+    } else if (k % 2 === 0) {
+      ang = (9.4 * logR + 2.2) * 0.5 + (k % 4 === 0 ? 0 : Math.PI) + gauss() * 0.22;
+    } else {
+      ang = (13.8 * logR - 0.7) / 3.0 + (k % 3) * ((Math.PI * 2) / 3) + gauss() * 0.22;
+    }
+    const rScene = rN * 9.4;
+    microClusters.push({
+      x: Math.cos(ang) * rScene,
+      z: Math.sin(ang) * rScene,
+      sigma: 0.06 + rand() * 0.16,
+      rNorm: rN,
+    });
+  }
+
+  // Exact arm tangent at NGC 206 (-0.56 * 9.4, +0.09 * 9.4) matching AndromedaBaker
+  const ngcCenterX = -5.264;
+  const ngcCenterZ = 0.846;
+  const ngcTangX = -0.34;
+  const ngcTangZ = -0.94;
+  const ngcPerpX = -ngcTangZ;
+  const ngcPerpZ = ngcTangX;
+
+  const nBulgeEnd = Math.round(count * (6500 / 52000));
+  const nArmEnd = Math.round(count * (34500 / 52000));
+  const nNgcEnd = nArmEnd + Math.round(count * (2500 / 52000));
+  const nClusterEnd = Math.round(count * (43000 / 52000));
+  const nH2End = Math.round(count * (47500 / 52000));
+
+  for (let i = 0; i < count; i++) {
+    let x: number;
+    let y: number;
+    let z: number;
+    let pop = 0;
+
+    if (i < nBulgeEnd) {
+      if (i < 64) {
+        // Mayall II (G1): brightest globular cluster in M31 outer halo
+        x = 5.6 + gauss() * 0.10;
+        y = -1.35 + gauss() * 0.075;
+        z = 3.2 + gauss() * 0.10;
+        tmpCol.copy(colBulgeIvory);
+        sizes[i] = 0.75 + rand() * 0.85;
+      } else {
+        // 3D warm triaxial bulge, thick disk, and inner halo sparkle
+        const r = Math.pow(rand(), 1.85) * 3.15;
+        const theta = rand() * Math.PI * 2;
+        const phi = Math.acos(2 * rand() - 1);
+        const bx = Math.sin(phi) * Math.cos(theta) * r * 1.16;
+        const by = Math.cos(phi) * r * 0.56;
+        const bz = Math.sin(phi) * Math.sin(theta) * r * 0.94;
+        const cosBar = Math.cos(0.35);
+        const sinBar = Math.sin(0.35);
+        x = bx * cosBar - bz * sinBar;
+        y = by;
+        z = bx * sinBar + bz * cosBar;
+        tmpCol.copy(colBulgePeach).lerp(colBulgeIvory, Math.max(0, 1 - r / 1.45));
+        sizes[i] = 0.42 + Math.pow(rand(), 2.2) * 0.88;
+      }
+      pop = 0;
+    } else if (i < nArmEnd) {
+      // Flocculent multi-arm + patchy 10 kpc ring + continuous warm disk field stars
+      const pick = rand();
+      const useRing = pick < 0.34;
+      const useM3 = pick >= 0.34 && pick < 0.62;
+      const rNorm = useRing
+        ? Math.min(0.89, Math.max(0.40, 0.60 + gauss() * 0.12))
+        : 0.10 + Math.pow(rand(), 1.15) * 0.83;
+      const rPlane = rNorm * 9.4;
+      const logR = Math.log(rNorm + 0.11);
+      let ang: number;
+      if (useRing && rand() < 0.38) {
+        ang = rand() * Math.PI * 2;
+      } else if (useM3) {
+        const arm = i % 3;
+        ang = (13.8 * logR - 0.7) / 3.0 + arm * ((Math.PI * 2) / 3) + gauss() * 0.28;
+      } else {
+        const arm = i % 2;
+        ang = (9.4 * logR + 2.2) * 0.5 + arm * Math.PI + gauss() * 0.26;
+      }
+      x = Math.cos(ang) * rPlane;
+      y = gauss() * (rNorm < 0.35 ? 0.18 : 0.12) * (1.0 - 0.35 * rNorm);
+      z = Math.sin(ang) * rPlane;
+      tmpCol.copy(colArmCobalt).lerp(colSapphire, rand() * 0.65);
+      if (rNorm < 0.42) {
+        tmpCol.lerp(colWarmDisk, ((0.42 - rNorm) / 0.42) * 0.82);
+      }
+      sizes[i] = 0.42 + Math.pow(rand(), 2.6) * 0.98;
+      pop = 1;
+    } else if (i < nNgcEnd) {
+      // Frothy arm-aligned NGC 206 OB super-association
+      const uT = gauss() * 0.48;
+      const vP = gauss() * 0.20;
+      x = ngcCenterX + uT * ngcTangX + vP * ngcPerpX;
+      y = gauss() * 0.065;
+      z = ngcCenterZ + uT * ngcTangZ + vP * ngcPerpZ;
+      tmpCol.copy(colSapphire).lerp(colArmCobalt, rand() * 0.45);
+      sizes[i] = 0.46 + Math.pow(rand(), 2.1) * 0.96;
+      pop = 1;
+    } else if (i < nClusterEnd) {
+      // Compact powdery OB micro-clusters studded along 10 kpc ring & flocculent ridges
+      const mc = microClusters[i % microClusters.length];
+      x = mc.x + gauss() * mc.sigma;
+      y = gauss() * 0.065;
+      z = mc.z + gauss() * mc.sigma;
+      tmpCol.copy(colSapphire).lerp(colArmCobalt, rand() * 0.52);
+      if (mc.rNorm < 0.40) {
+        tmpCol.lerp(colBulgeIvory, ((0.40 - mc.rNorm) / 0.40) * 0.58);
+      }
+      sizes[i] = 0.48 + Math.pow(rand(), 2.0) * 1.02;
+      pop = 1;
+    } else if (i < nH2End) {
+      // Crisp ruby-rose H-II emission knots hugging outer 10 kpc ring & arm borders
+      const onRing = rand() < 0.60;
+      const rNorm = onRing
+        ? Math.min(0.86, Math.max(0.42, 0.60 + gauss() * 0.11))
+        : 0.26 + Math.pow(rand(), 0.95) * 0.58;
+      const rPlane = rNorm * 9.4;
+      const logR = Math.log(rNorm + 0.11);
+      const ang = onRing && rand() < 0.35
+        ? rand() * Math.PI * 2
+        : (9.4 * logR + 2.2) * 0.5 + (i % 2) * Math.PI - 0.08 + gauss() * 0.18;
+      x = Math.cos(ang) * rPlane;
+      y = gauss() * 0.055;
+      z = Math.sin(ang) * rPlane;
+      tmpCol.copy(colH2Ruby);
+      sizes[i] = 0.54 + Math.pow(rand(), 1.8) * 1.05;
+      pop = 2;
+    } else {
+      // 4,500 jewel-like 3D Milky Way foreground field stars with realistic magnitude falloff
+      const r3d = 11.5 + Math.pow(rand(), 0.72) * 26.0;
+      const theta = rand() * Math.PI * 2;
+      const phi = Math.acos(2 * rand() - 1);
+      x = r3d * Math.sin(phi) * Math.cos(theta);
+      y = r3d * Math.cos(phi);
+      z = r3d * Math.sin(phi) * Math.sin(theta);
+      const specPick = rand();
+      if (specPick < 0.18) {
+        tmpCol.copy(colFgAmber);
+      } else if (specPick < 0.46) {
+        tmpCol.copy(colFgGold);
+      } else if (specPick < 0.78) {
+        tmpCol.copy(colFgWhite);
+      } else {
+        tmpCol.copy(colFgBlue);
+      }
+      const isSpikedHero = i >= count - 28;
+      sizes[i] = isSpikedHero
+        ? 2.0 + rand() * 1.35
+        : 0.52 + Math.pow(rand(), 4.2) * 1.25;
+      pop = 3;
+    }
+
+    positions[i * 3] = x;
+    positions[i * 3 + 1] = y;
+    positions[i * 3 + 2] = z;
+    colors[i * 3] = tmpCol.r;
+    colors[i * 3 + 1] = tmpCol.g;
+    colors[i * 3 + 2] = tmpCol.b;
+    pops[i] = pop;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('aStarCol', new THREE.BufferAttribute(colors, 3));
+  geo.setAttribute('aStarSize', new THREE.BufferAttribute(sizes, 1));
+  geo.setAttribute('aStarPop', new THREE.BufferAttribute(pops, 1));
+  return geo;
+}
+
+function buildDwarfEllipticalStarsGeometry(count: number, isM110: boolean): THREE.BufferGeometry {
+  const positions = new Float32Array(count * 3);
+  const colors = new Float32Array(count * 3);
+  const sizes = new Float32Array(count);
+
+  const { rand } = createGalaxyPrng(isM110 ? 2051 : 2211);
+  const colIvory = new THREE.Color('#fff2d6');
+  const colGold = new THREE.Color('#f0c88c');
+  const colSilver = new THREE.Color('#dbe4f8');
+  const colYoungBlue = new THREE.Color('#95beff');
+  const tmpCol = new THREE.Color();
+
+  for (let i = 0; i < count; i++) {
+    const r = Math.pow(rand(), isM110 ? 1.45 : 2.15) * 0.86;
+    const theta = rand() * Math.PI * 2;
+    const phi = Math.acos(2 * rand() - 1);
+    const sx = isM110 ? 2.4 : 4.0;
+    const sy = isM110 ? 4.3 : 3.4;
+    const sz = isM110 ? 2.4 : 3.3;
+
+    positions[i * 3] = Math.sin(phi) * Math.cos(theta) * r * sx;
+    positions[i * 3 + 1] = Math.cos(phi) * r * sy;
+    positions[i * 3 + 2] = Math.sin(phi) * Math.sin(theta) * r * sz;
+
+    if (isM110 && r < 0.38 && rand() < 0.24) {
+      tmpCol.copy(colYoungBlue);
+      sizes[i] = 1.0 + rand() * 1.1;
+    } else {
+      tmpCol.copy(isM110 ? colSilver : colGold).lerp(colIvory, 1.0 - r * 0.7);
+      sizes[i] = 0.85 + rand() * 1.05;
+    }
+    colors[i * 3] = tmpCol.r;
+    colors[i * 3 + 1] = tmpCol.g;
+    colors[i * 3 + 2] = tmpCol.b;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('aStarCol', new THREE.BufferAttribute(colors, 3));
+  geo.setAttribute('aStarSize', new THREE.BufferAttribute(sizes, 1));
+  return geo;
+}
+
+const SHARED_ANDROMEDA_STARS_GEO = buildAndromedaStarsGeometry(52000);
+const SHARED_M32_STARS_GEO = buildDwarfEllipticalStarsGeometry(360, false);
+const SHARED_M110_STARS_GEO = buildDwarfEllipticalStarsGeometry(460, true);
 
 interface ProminenceSlot {
   mesh: THREE.Mesh;
@@ -133,6 +471,13 @@ export interface BodyVisual {
   auroraMesh?: THREE.Mesh;
   jupiterAuroraMesh?: THREE.Mesh;
   lensVolume?: THREE.Mesh;
+  sourceGalaxyGroup?: THREE.Group;
+  andromedaGroup?: THREE.Group;
+  andromedaVolume?: THREE.Mesh;
+  andromedaStars?: THREE.Points;
+  dwarfGalaxyGroup?: THREE.Group;
+  dwarfVolume?: THREE.Mesh;
+  dwarfStars?: THREE.Points;
   ringMesh?: THREE.Mesh;
   coronaMesh?: THREE.Mesh;
   prominenceGroup?: THREE.Group;
@@ -160,6 +505,10 @@ export function computeVisualRadius(
   scaleMode: ScaleMode,
   cameraDistToBody: number
 ): number {
+  if (body.galaxyType === 'andromeda') return 13.5;
+  if (body.galaxyType === 'dwarf_elliptical_compact') return 2.4;
+  if (body.galaxyType === 'dwarf_elliptical_diffuse') return 4.2;
+
   const realRadius = Math.max(body.radius * METERS_TO_SCENE, 0.00015);
   if (scaleMode === 'real') {
     return realRadius;
@@ -168,6 +517,8 @@ export function computeVisualRadius(
   let playableRadius: number;
   if (body.isGravitationalLens) {
     playableRadius = 2.6;
+  } else if (body.isLensSource) {
+    playableRadius = 6.5;
   } else if (body.category === 'black_hole') {
     // Wide 12.2x Gargantua accretion disk spans ~18 scene units at r = 1.45
     playableRadius = 1.45 * Math.pow(Math.max(0.25, body.mass / (12 * 1.98847e30)), 0.14);
@@ -687,6 +1038,57 @@ export class BodyRenderer {
         }
       }
 
+      if (vis.sourceGalaxyGroup) {
+        const camDistSrc = camera.position.distanceTo(vis.renderedPos);
+        // Strictly hidden when viewing the foreground lens 160 AU away so it never leaks into the Einstein Ring!
+        vis.sourceGalaxyGroup.visible = camDistSrc < 2500;
+        if (vis.sourceGalaxyGroup.visible) {
+          vis.sourceGalaxyGroup.scale.setScalar(r);
+          vis.sourceGalaxyGroup.children.forEach((child) => {
+            const mat = (child as THREE.Mesh | THREE.Points).material as THREE.ShaderMaterial;
+            if (mat.uniforms?.uTime) mat.uniforms.uTime.value = elapsedTime;
+          });
+        }
+      }
+
+      if (vis.andromedaGroup && vis.andromedaVolume && vis.andromedaStars) {
+        vis.andromedaGroup.scale.setScalar(r);
+        vis.root.updateMatrixWorld(true);
+        const modeVal =
+          body.galaxySpectrumMode === 'infrared'
+            ? 1.0
+            : body.galaxySpectrumMode === 'ultraviolet'
+              ? 2.0
+              : 0.0;
+        const pxRatio = Math.min(window.devicePixelRatio || 1, 1.25);
+
+        const volMat = vis.andromedaVolume.material as THREE.ShaderMaterial;
+        volMat.uniforms.uTime.value = elapsedTime;
+        volMat.uniforms.uDustOpacity.value = body.galaxyDustOpacity ?? 1.0;
+        volMat.uniforms.uSpectrumMode.value = modeVal;
+        volMat.uniforms.uInvModelMatrix.value.copy(vis.andromedaVolume.matrixWorld).invert();
+
+        const starMat = vis.andromedaStars.material as THREE.ShaderMaterial;
+        starMat.uniforms.uTime.value = elapsedTime;
+        starMat.uniforms.uSpectrumMode.value = modeVal;
+        starMat.uniforms.uPixelRatio.value = pxRatio;
+        starMat.uniforms.uDustOpacity.value = body.galaxyDustOpacity ?? 1.0;
+        starMat.uniforms.uInvModelMatrix.value.copy(vis.andromedaStars.matrixWorld).invert();
+      }
+
+      if (vis.dwarfGalaxyGroup && vis.dwarfVolume && vis.dwarfStars) {
+        vis.dwarfGalaxyGroup.scale.setScalar(r);
+        vis.root.updateMatrixWorld(true);
+        const pxRatio = Math.min(window.devicePixelRatio || 1, 1.25);
+
+        const dMat = vis.dwarfVolume.material as THREE.ShaderMaterial;
+        dMat.uniforms.uTime.value = elapsedTime;
+        dMat.uniforms.uInvModelMatrix.value.copy(vis.dwarfVolume.matrixWorld).invert();
+
+        const dsMat = vis.dwarfStars.material as THREE.ShaderMaterial;
+        dsMat.uniforms.uPixelRatio.value = pxRatio;
+      }
+
       if (vis.blackHoleVolume) {
         vis.blackHoleVolume.scale.setScalar(r);
         vis.root.updateMatrixWorld(true);
@@ -816,7 +1218,11 @@ export class BodyRenderer {
 
       const camDist = camera.position.distanceTo(vis.renderedPos);
       const pickRadius = Math.max(
-        body.category === 'black_hole' ? r * 4.2 : r * 1.45,
+        body.galaxyType
+          ? r * 2.2
+          : body.category === 'black_hole'
+            ? r * 4.2
+            : r * 1.45,
         camDist * 0.022
       );
       vis.pickMesh.scale.setScalar(pickRadius);
@@ -850,7 +1256,12 @@ export class BodyRenderer {
         syncStarLights(vis.surfaceMaterial, occCount);
       }
 
-      vis.trailLine.visible = showTrails && body.trail.length > 1 && !body.isLensSource && !body.isGravitationalLens;
+      vis.trailLine.visible =
+        showTrails &&
+        body.trail.length > 1 &&
+        !body.isLensSource &&
+        !body.isGravitationalLens &&
+        !body.galaxyType;
       if (vis.trailLine.visible) {
         const trail = body.trail;
         const count = Math.min(trail.length, MAX_TRAIL_VERTS);
@@ -883,7 +1294,12 @@ export class BodyRenderer {
     }
 
     const selectedBody = selectedId ? this.bodyLookup.get(selectedId) : undefined;
-    if (selectedVis && !selectedBody?.isGravitationalLens && !selectedBody?.isLensSource) {
+    if (
+      selectedVis &&
+      !selectedBody?.isGravitationalLens &&
+      !selectedBody?.isLensSource &&
+      !selectedBody?.galaxyType
+    ) {
       const camDist = Math.max(0.1, camera.position.distanceTo(selectedVis.renderedPos));
       const baseMult = selectedVis.category === 'black_hole' ? 3.8 : 1.14;
       const ringScale = Math.max(selectedVis.renderedRadius * baseMult, camDist * 0.022);
@@ -915,7 +1331,7 @@ export class BodyRenderer {
     let surfaceMaterial: THREE.Material;
     let useEarthClouds = false;
 
-    if (body.isGravitationalLens || body.isLensSource) {
+    if (body.isGravitationalLens || body.isLensSource || body.galaxyType) {
       surfaceMaterial = new THREE.MeshBasicMaterial({ visible: false });
     } else if (body.volcanicIo) {
       surfaceMaterial = createIoSurfaceMaterial(body, this.textures);
@@ -1001,6 +1417,98 @@ export class BodyRenderer {
       lensVolume.frustumCulled = false;
       lensVolume.renderOrder = 3;
       root.add(lensVolume);
+    }
+
+    let sourceGalaxyGroup: THREE.Group | undefined;
+    if (body.isLensSource) {
+      sourceGalaxyGroup = new THREE.Group();
+      sourceGalaxyGroup.rotation.set(-0.46, 0.24, 0.18);
+
+      const discMesh = new THREE.Mesh(
+        SHARED_SOURCE_GALAXY_DISC_GEO,
+        createSourceGalaxyDiscMaterial()
+      );
+      discMesh.renderOrder = 2;
+      sourceGalaxyGroup.add(discMesh);
+
+      const bulgeMesh = new THREE.Mesh(
+        SHARED_SOURCE_GALAXY_BULGE_GEO,
+        createSourceGalaxyBulgeMaterial()
+      );
+      bulgeMesh.scale.set(1.0, 1.0, 0.58);
+      bulgeMesh.renderOrder = 3;
+      sourceGalaxyGroup.add(bulgeMesh);
+
+      const starsPoints = new THREE.Points(
+        SHARED_SOURCE_GALAXY_STARS_GEO,
+        createSourceGalaxyStarsMaterial()
+      );
+      starsPoints.renderOrder = 3;
+      sourceGalaxyGroup.add(starsPoints);
+
+      root.add(sourceGalaxyGroup);
+    }
+
+    let andromedaGroup: THREE.Group | undefined;
+    let andromedaVolume: THREE.Mesh | undefined;
+    let andromedaStars: THREE.Points | undefined;
+    if (body.galaxyType === 'andromeda') {
+      const maps = textureAtlas.getAndromedaMaps();
+      if (maps) {
+        andromedaGroup = new THREE.Group();
+        andromedaGroup.rotation.order = 'ZYX';
+        andromedaGroup.rotation.set(0.25, 0.0, -0.56);
+
+        andromedaVolume = new THREE.Mesh(
+          SHARED_ANDROMEDA_VOLUME_GEO,
+          createAndromedaVolumeMaterial(maps)
+        );
+        andromedaVolume.renderOrder = 2;
+        andromedaVolume.frustumCulled = false;
+        andromedaGroup.add(andromedaVolume);
+
+        andromedaStars = new THREE.Points(
+          SHARED_ANDROMEDA_STARS_GEO,
+          createAndromedaStarsMaterial(maps)
+        );
+        andromedaStars.renderOrder = 3;
+        andromedaStars.frustumCulled = false;
+        andromedaGroup.add(andromedaStars);
+
+        root.add(andromedaGroup);
+      }
+    }
+
+    let dwarfGalaxyGroup: THREE.Group | undefined;
+    let dwarfVolume: THREE.Mesh | undefined;
+    let dwarfStars: THREE.Points | undefined;
+    if (
+      body.galaxyType === 'dwarf_elliptical_compact' ||
+      body.galaxyType === 'dwarf_elliptical_diffuse'
+    ) {
+      const isM110 = body.galaxyType === 'dwarf_elliptical_diffuse';
+      dwarfGalaxyGroup = new THREE.Group();
+      if (isM110) {
+        dwarfGalaxyGroup.rotation.set(0.08, 0.18, 0.14);
+      }
+
+      dwarfVolume = new THREE.Mesh(
+        SHARED_DWARF_ELLIPTICAL_GEO,
+        createDwarfEllipticalMaterial(isM110)
+      );
+      dwarfVolume.renderOrder = 2;
+      dwarfVolume.frustumCulled = false;
+      dwarfGalaxyGroup.add(dwarfVolume);
+
+      dwarfStars = new THREE.Points(
+        isM110 ? SHARED_M110_STARS_GEO : SHARED_M32_STARS_GEO,
+        createDwarfEllipticalStarsMaterial()
+      );
+      dwarfStars.renderOrder = 3;
+      dwarfStars.frustumCulled = false;
+      dwarfGalaxyGroup.add(dwarfStars);
+
+      root.add(dwarfGalaxyGroup);
     }
 
     let atmosphereMesh: THREE.Mesh | undefined;
@@ -1179,6 +1687,13 @@ export class BodyRenderer {
       auroraMesh,
       jupiterAuroraMesh,
       lensVolume,
+      sourceGalaxyGroup,
+      andromedaGroup,
+      andromedaVolume,
+      andromedaStars,
+      dwarfGalaxyGroup,
+      dwarfVolume,
+      dwarfStars,
       ringMesh,
       coronaMesh,
       prominenceGroup,
@@ -1207,6 +1722,12 @@ export class BodyRenderer {
     if (vis.auroraMesh) (vis.auroraMesh.material as THREE.Material).dispose();
     if (vis.jupiterAuroraMesh) (vis.jupiterAuroraMesh.material as THREE.Material).dispose();
     if (vis.lensVolume) (vis.lensVolume.material as THREE.Material).dispose();
+    for (const grp of [vis.sourceGalaxyGroup, vis.andromedaGroup, vis.dwarfGalaxyGroup]) {
+      grp?.traverse((child) => {
+        const obj = child as THREE.Mesh | THREE.Points;
+        if (obj.material) (obj.material as THREE.Material).dispose();
+      });
+    }
     if (vis.ringMesh) {
       vis.ringMesh.geometry.dispose();
       (vis.ringMesh.material as THREE.Material).dispose();

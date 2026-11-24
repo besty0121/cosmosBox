@@ -5,6 +5,7 @@ export const C_LIGHT = 2.99792458e8; // Speed of light (m/s)
 export const SIGMA_SB = 5.670374419e-8; // Stefan-Boltzmann constant (W m^-2 K^-4)
 
 export const AU = 1.495978707e11; // Astronomical Unit (m)
+export const LY = 9.46073047e15; // Light-year (m)
 export const MINUTE = 60;
 export const HOUR = 3600;
 export const DAY = 86400;
@@ -78,7 +79,38 @@ export function temperatureToHex(tempK: number): string {
   return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
 }
 
+const SUP_DIGITS: Record<string, string> = {
+  '-': '⁻',
+  '0': '⁰',
+  '1': '¹',
+  '2': '²',
+  '3': '³',
+  '4': '⁴',
+  '5': '⁵',
+  '6': '⁶',
+  '7': '⁷',
+  '8': '⁸',
+  '9': '⁹',
+};
+
+function toSuperscriptExp(exp: number): string {
+  return String(exp)
+    .split('')
+    .map((ch) => SUP_DIGITS[ch] ?? ch)
+    .join('');
+}
+
 export function formatMass(massKg: number): string {
+  if (massKg >= 1e5 * M_SUN) {
+    const solar = massKg / M_SUN;
+    let exp = Math.floor(Math.log10(solar));
+    let mant = solar / Math.pow(10, exp);
+    if (mant >= 9.995) {
+      exp += 1;
+      mant /= 10;
+    }
+    return `${mant.toFixed(2)}×10${toSuperscriptExp(exp)} M☉`;
+  }
   if (massKg >= 0.05 * M_SUN) {
     return `${(massKg / M_SUN).toFixed(3)} M☉`;
   }
@@ -95,6 +127,12 @@ export function formatMass(massKg: number): string {
 }
 
 export function formatRadius(radiusM: number): string {
+  if (radiusM >= 1e4 * LY) {
+    return `${(radiusM / (1e4 * LY)).toFixed(2)} 万光年`;
+  }
+  if (radiusM >= 0.1 * LY) {
+    return `${Math.round(radiusM / LY).toLocaleString()} 光年`;
+  }
   if (radiusM >= 0.1 * R_SUN) {
     return `${(radiusM / R_SUN).toFixed(2)} R☉`;
   }
