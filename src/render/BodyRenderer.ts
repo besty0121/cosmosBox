@@ -207,7 +207,7 @@ function createGalaxyPrng(seed: number) {
   return { rand, gauss };
 }
 
-function buildAndromedaStarsGeometry(count = 52000): THREE.BufferGeometry {
+function buildAndromedaStarsGeometry(count = 40000): THREE.BufferGeometry {
   const positions = new Float32Array(count * 3);
   const colors = new Float32Array(count * 3);
   const sizes = new Float32Array(count);
@@ -221,10 +221,6 @@ function buildAndromedaStarsGeometry(count = 52000): THREE.BufferGeometry {
   const colArmCobalt = new THREE.Color('#7eb8ff');
   const colSapphire = new THREE.Color('#cce4ff');
   const colH2Ruby = new THREE.Color('#ff3c6e');
-  const colFgAmber = new THREE.Color('#ffc478');
-  const colFgGold = new THREE.Color('#ffe2b4');
-  const colFgWhite = new THREE.Color('#f5f8ff');
-  const colFgBlue = new THREE.Color('#9bc4ff');
   const tmpCol = new THREE.Color();
 
   // Pre-build 160 compact OB star-cloud micro-associations aligned to M31's flocculent arms & patchy 10 kpc ring
@@ -245,7 +241,7 @@ function buildAndromedaStarsGeometry(count = 52000): THREE.BufferGeometry {
     microClusters.push({
       x: Math.cos(ang) * rScene,
       z: Math.sin(ang) * rScene,
-      sigma: 0.06 + rand() * 0.16,
+      sigma: 0.10 + rand() * 0.18,
       rNorm: rN,
     });
   }
@@ -258,11 +254,10 @@ function buildAndromedaStarsGeometry(count = 52000): THREE.BufferGeometry {
   const ngcPerpX = -ngcTangZ;
   const ngcPerpZ = ngcTangX;
 
-  const nBulgeEnd = Math.round(count * (6500 / 52000));
-  const nArmEnd = Math.round(count * (34500 / 52000));
-  const nNgcEnd = nArmEnd + Math.round(count * (2500 / 52000));
-  const nClusterEnd = Math.round(count * (43000 / 52000));
-  const nH2End = Math.round(count * (47500 / 52000));
+  const nBulgeEnd = Math.round(count * (5500 / 40000));
+  const nArmEnd = nBulgeEnd + Math.round(count * (26000 / 40000));
+  const nNgcEnd = nArmEnd + Math.round(count * (450 / 40000));
+  const nClusterEnd = nNgcEnd + Math.round(count * (4500 / 40000));
 
   for (let i = 0; i < count; i++) {
     let x: number;
@@ -271,16 +266,16 @@ function buildAndromedaStarsGeometry(count = 52000): THREE.BufferGeometry {
     let pop = 0;
 
     if (i < nBulgeEnd) {
-      if (i < 64) {
+      if (i < 18) {
         // Mayall II (G1): brightest globular cluster in M31 outer halo
-        x = 5.6 + gauss() * 0.10;
-        y = -1.35 + gauss() * 0.075;
-        z = 3.2 + gauss() * 0.10;
+        x = 5.6 + gauss() * 0.14;
+        y = -1.35 + gauss() * 0.10;
+        z = 3.2 + gauss() * 0.14;
         tmpCol.copy(colBulgeIvory);
-        sizes[i] = 0.75 + rand() * 0.85;
+        sizes[i] = 0.72 + rand() * 0.75;
       } else {
-        // 3D warm triaxial bulge, thick disk, and inner halo sparkle
-        const r = Math.pow(rand(), 1.85) * 3.15;
+        // 3D warm triaxial bulge, thick disk, and inner halo sparkle (gentle core distribution prevents 1px HDR spike)
+        const r = Math.pow(rand(), 1.55) * 3.4;
         const theta = rand() * Math.PI * 2;
         const phi = Math.acos(2 * rand() - 1);
         const bx = Math.sin(phi) * Math.cos(theta) * r * 1.16;
@@ -291,8 +286,8 @@ function buildAndromedaStarsGeometry(count = 52000): THREE.BufferGeometry {
         x = bx * cosBar - bz * sinBar;
         y = by;
         z = bx * sinBar + bz * cosBar;
-        tmpCol.copy(colBulgePeach).lerp(colBulgeIvory, Math.max(0, 1 - r / 1.45));
-        sizes[i] = 0.42 + Math.pow(rand(), 2.2) * 0.88;
+        tmpCol.copy(colBulgePeach).lerp(colBulgeIvory, Math.max(0, 1 - r / 1.55));
+        sizes[i] = 0.42 + Math.pow(rand(), 2.2) * 0.85;
       }
       pop = 0;
     } else if (i < nArmEnd) {
@@ -322,31 +317,31 @@ function buildAndromedaStarsGeometry(count = 52000): THREE.BufferGeometry {
       if (rNorm < 0.42) {
         tmpCol.lerp(colWarmDisk, ((0.42 - rNorm) / 0.42) * 0.82);
       }
-      sizes[i] = 0.42 + Math.pow(rand(), 2.6) * 0.98;
+      sizes[i] = 0.42 + Math.pow(rand(), 2.6) * 0.94;
       pop = 1;
     } else if (i < nNgcEnd) {
-      // Frothy arm-aligned NGC 206 OB super-association
-      const uT = gauss() * 0.48;
-      const vP = gauss() * 0.20;
+      // Frothy arm-aligned NGC 206 OB super-association (450 dispersed OB knots prevent sub-pixel bloom clipping)
+      const uT = gauss() * 0.56;
+      const vP = gauss() * 0.24;
       x = ngcCenterX + uT * ngcTangX + vP * ngcPerpX;
-      y = gauss() * 0.065;
+      y = gauss() * 0.08;
       z = ngcCenterZ + uT * ngcTangZ + vP * ngcPerpZ;
       tmpCol.copy(colSapphire).lerp(colArmCobalt, rand() * 0.45);
-      sizes[i] = 0.46 + Math.pow(rand(), 2.1) * 0.96;
+      sizes[i] = 0.44 + Math.pow(rand(), 2.1) * 0.88;
       pop = 1;
     } else if (i < nClusterEnd) {
       // Compact powdery OB micro-clusters studded along 10 kpc ring & flocculent ridges
       const mc = microClusters[i % microClusters.length];
       x = mc.x + gauss() * mc.sigma;
-      y = gauss() * 0.065;
+      y = gauss() * 0.075;
       z = mc.z + gauss() * mc.sigma;
       tmpCol.copy(colSapphire).lerp(colArmCobalt, rand() * 0.52);
       if (mc.rNorm < 0.40) {
         tmpCol.lerp(colBulgeIvory, ((0.40 - mc.rNorm) / 0.40) * 0.58);
       }
-      sizes[i] = 0.48 + Math.pow(rand(), 2.0) * 1.02;
+      sizes[i] = 0.46 + Math.pow(rand(), 2.0) * 0.94;
       pop = 1;
-    } else if (i < nH2End) {
+    } else {
       // Crisp ruby-rose H-II emission knots hugging outer 10 kpc ring & arm borders
       const onRing = rand() < 0.60;
       const rNorm = onRing
@@ -358,34 +353,11 @@ function buildAndromedaStarsGeometry(count = 52000): THREE.BufferGeometry {
         ? rand() * Math.PI * 2
         : (9.4 * logR + 2.2) * 0.5 + (i % 2) * Math.PI - 0.08 + gauss() * 0.18;
       x = Math.cos(ang) * rPlane;
-      y = gauss() * 0.055;
+      y = gauss() * 0.06;
       z = Math.sin(ang) * rPlane;
       tmpCol.copy(colH2Ruby);
-      sizes[i] = 0.54 + Math.pow(rand(), 1.8) * 1.05;
+      sizes[i] = 0.50 + Math.pow(rand(), 1.8) * 0.95;
       pop = 2;
-    } else {
-      // 4,500 jewel-like 3D Milky Way foreground field stars with realistic magnitude falloff
-      const r3d = 11.5 + Math.pow(rand(), 0.72) * 26.0;
-      const theta = rand() * Math.PI * 2;
-      const phi = Math.acos(2 * rand() - 1);
-      x = r3d * Math.sin(phi) * Math.cos(theta);
-      y = r3d * Math.cos(phi);
-      z = r3d * Math.sin(phi) * Math.sin(theta);
-      const specPick = rand();
-      if (specPick < 0.18) {
-        tmpCol.copy(colFgAmber);
-      } else if (specPick < 0.46) {
-        tmpCol.copy(colFgGold);
-      } else if (specPick < 0.78) {
-        tmpCol.copy(colFgWhite);
-      } else {
-        tmpCol.copy(colFgBlue);
-      }
-      const isSpikedHero = i >= count - 28;
-      sizes[i] = isSpikedHero
-        ? 2.0 + rand() * 1.35
-        : 0.52 + Math.pow(rand(), 4.2) * 1.25;
-      pop = 3;
     }
 
     positions[i * 3] = x;
@@ -448,7 +420,7 @@ function buildDwarfEllipticalStarsGeometry(count: number, isM110: boolean): THRE
   return geo;
 }
 
-const SHARED_ANDROMEDA_STARS_GEO = buildAndromedaStarsGeometry(52000);
+const SHARED_ANDROMEDA_STARS_GEO = buildAndromedaStarsGeometry(40000);
 const SHARED_M32_STARS_GEO = buildDwarfEllipticalStarsGeometry(360, false);
 const SHARED_M110_STARS_GEO = buildDwarfEllipticalStarsGeometry(460, true);
 

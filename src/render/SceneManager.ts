@@ -651,7 +651,7 @@ export class SceneManager {
   }
 
   private createStarfield(): THREE.Points {
-    const count = 5500;
+    const count = 12000;
     const positions = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
     const sizes = new Float32Array(count);
@@ -673,7 +673,7 @@ export class SceneManager {
 
     for (let i = 0; i < count; i++) {
       let dir: THREE.Vector3;
-      if (Math.random() < 0.45) {
+      if (Math.random() < 0.42) {
         const theta = Math.random() * Math.PI * 2;
         const lat = (Math.random() + Math.random() + Math.random() - 1.5) * 0.22;
         dir = tmp
@@ -701,11 +701,12 @@ export class SceneManager {
 
       const c = palette[Math.floor(Math.random() * palette.length)];
       const mag = Math.pow(Math.random(), 4.0);
-      const lum = 0.25 + mag * 1.15;
+      // Capped <= 0.94 below UnrealBloomPass 0.98 threshold so skybox stars never clip into square bloom boxes
+      const lum = 0.22 + mag * 0.72;
       colors[i * 3] = c.r * lum;
       colors[i * 3 + 1] = c.g * lum;
       colors[i * 3 + 2] = c.b * lum;
-      sizes[i] = 1.2 + mag * 4.0;
+      sizes[i] = 1.0 + mag * 3.4;
     }
 
     const geo = new THREE.BufferGeometry();

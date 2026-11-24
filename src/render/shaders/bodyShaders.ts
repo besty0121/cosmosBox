@@ -2864,79 +2864,84 @@ export function createAndromedaStarsMaterial(maps: AndromedaDiskMaps): THREE.Sha
       varying float vSpike;
 
       void main() {
-        bool isForeground = aStarPop > 2.5;
-        vec3 p = position;
         float spin = -uTime * 0.0022;
         float cs = cos(spin);
         float sn = sin(spin);
-        if (!isForeground) {
-          p = vec3(position.x * cs - position.z * sn, position.y, position.x * sn + position.z * cs);
-        }
+        vec3 p = vec3(position.x * cs - position.z * sn, position.y, position.x * sn + position.z * cs);
 
         vec4 mvPos = modelViewMatrix * vec4(p, 1.0);
         float camDist = max(8.0, -mvPos.z);
+
+        // Flux-conserving far-distance fade: hands off cleanly to mipmapped volumetric M31 map beyond ~300-620 units
+        float farFade = 1.0 - smoothstep(300.0, 620.0, camDist);
+        if (farFade <= 0.005) {
+          vCol = vec3(0.0);
+          vAlpha = 0.0;
+          vSpike = 0.0;
+          gl_PointSize = 0.0;
+          gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+          return;
+        }
+        float fluxScale = clamp(230.0 / camDist, 0.22, 1.0);
 
         bool isIR = uSpectrumMode > 0.5 && uSpectrumMode < 1.5;
         bool isUV = uSpectrumMode >= 1.5;
 
         float rNorm = length(position.xz) / 9.4;
-        float radialFade = (aStarPop > 0.5 && !isForeground) ? (1.0 - smoothstep(0.60, 0.96, rNorm)) : 1.0;
-        float proxFade = isForeground ? smoothstep(11.0, 25.0, -mvPos.z) : 1.0;
+        float radialFade = aStarPop > 0.5 ? (1.0 - smoothstep(0.60, 0.96, rNorm)) : 1.0;
 
-        vSpike = isForeground ? clamp((aStarSize - 1.95) * 0.58, 0.0, 1.0) : 0.0;
+        vSpike = 0.0;
         vCol = aStarCol;
-        vAlpha = (isForeground ? 0.90 : 0.38) * radialFade * proxFade;
+        vAlpha = 0.34 * radialFade * farFade * fluxScale;
 
-        if (!isForeground) {
-          if (isIR) {
-            if (aStarPop > 1.5) {
-              vCol = vec3(1.42, 0.54, 0.18);
-              vAlpha = 0.92 * radialFade;
-            } else if (aStarPop > 0.5) {
-              vCol = vec3(0.72, 0.85, 1.05);
-              vAlpha = 0.18 * radialFade;
-            } else {
-              vCol = vec3(0.84, 0.90, 1.0);
-              vAlpha = 0.30;
-            }
-          } else if (isUV) {
-            if (aStarPop > 0.5) {
-              vCol = vec3(0.55, 0.84, 1.65);
-              vAlpha = 0.92 * radialFade;
-            } else {
-              vCol = aStarCol * 0.42;
-              vAlpha = 0.15;
-            }
+        if (isIR) {
+          if (aStarPop > 1.5) {
+            vCol = vec3(1.12, 0.48, 0.18);
+            vAlpha = 0.72 * radialFade * farFade * fluxScale;
+          } else if (aStarPop > 0.5) {
+            vCol = vec3(0.72, 0.85, 1.05);
+            vAlpha = 0.16 * radialFade * farFade * fluxScale;
           } else {
-            // True 3D ray-to-equatorial-plane (y=0) intersection for background/far-side stars behind dark dust lanes
-            vec3 localCam = (uInvModelMatrix * vec4(cameraPosition, 1.0)).xyz;
-            vec3 rd = p - localCam;
-            float dustSum = 0.0;
-            if (localCam.y * p.y < 0.0 && abs(rd.y) > 1e-4) {
-              float tHit = -localCam.y / rd.y;
-              vec2 hitXZ = localCam.xz + rd.xz * tHit;
-              vec2 hitRest = vec2(hitXZ.x * cs + hitXZ.y * sn, -hitXZ.x * sn + hitXZ.y * cs);
-              vec2 hitUV = hitRest / 18.8 + 0.5;
-              if (hitUV.x > 0.01 && hitUV.x < 0.99 && hitUV.y > 0.01 && hitUV.y < 0.99) {
-                vec4 hitDust = texture2D(uDustMap, hitUV);
-                dustSum += (hitDust.r * 1.45 + hitDust.g * 1.55) * 1.35;
-              }
+            vCol = vec3(0.84, 0.90, 1.0);
+            vAlpha = 0.26 * farFade * fluxScale;
+          }
+        } else if (isUV) {
+          if (aStarPop > 0.5) {
+            vCol = vec3(0.55, 0.84, 1.25);
+            vAlpha = 0.76 * radialFade * farFade * fluxScale;
+          } else {
+            vCol = aStarCol * 0.42;
+            vAlpha = 0.14 * farFade * fluxScale;
+          }
+        } else {
+          // True 3D ray-to-equatorial-plane (y=0) intersection for background/far-side stars behind dark dust lanes
+          vec3 localCam = (uInvModelMatrix * vec4(cameraPosition, 1.0)).xyz;
+          vec3 rd = p - localCam;
+          float dustSum = 0.0;
+          if (localCam.y * p.y < 0.0 && abs(rd.y) > 1e-4) {
+            float tHit = -localCam.y / rd.y;
+            vec2 hitXZ = localCam.xz + rd.xz * tHit;
+            vec2 hitRest = vec2(hitXZ.x * cs + hitXZ.y * sn, -hitXZ.x * sn + hitXZ.y * cs);
+            vec2 hitUV = hitRest / 18.8 + 0.5;
+            if (hitUV.x > 0.01 && hitUV.x < 0.99 && hitUV.y > 0.01 && hitUV.y < 0.99) {
+              vec4 hitDust = texture2D(uDustMap, hitUV);
+              dustSum += (hitDust.r * 1.45 + hitDust.g * 1.55) * 1.35;
             }
-            if (aStarPop > 0.5 && aStarPop < 2.5) {
-              vec4 ownDust = texture2D(uDustMap, position.xz / 18.8 + 0.5);
-              dustSum += (ownDust.r * 1.15 + ownDust.g * 1.25) * 0.55;
-            }
-            if (dustSum > 0.005) {
-              vec3 starTrans = exp(-vec3(0.68, 1.40, 2.12) * dustSum * 1.35 * uDustOpacity);
-              vCol *= starTrans;
-            }
+          }
+          if (aStarPop > 0.5 && aStarPop < 2.5) {
+            vec4 ownDust = texture2D(uDustMap, position.xz / 18.8 + 0.5);
+            dustSum += (ownDust.r * 1.15 + ownDust.g * 1.25) * 0.55;
+          }
+          if (dustSum > 0.005) {
+            vec3 starTrans = exp(-vec3(0.68, 1.40, 2.12) * dustSum * 1.35 * uDustOpacity);
+            vCol *= starTrans;
           }
         }
 
+        vCol = min(vCol, vec3(1.15));
         gl_Position = projectionMatrix * mvPos;
-        float basePt = aStarSize * (isForeground ? 210.0 : 175.0) / camDist * uPixelRatio;
-        float maxPt = vSpike > 0.05 ? mix(3.4, 12.5, vSpike) : (isForeground ? 3.2 : 2.35);
-        gl_PointSize = clamp(basePt + vSpike * 4.5, 1.0, maxPt);
+        float basePt = aStarSize * (175.0 / camDist) * uPixelRatio;
+        gl_PointSize = clamp(basePt, 1.0, 2.25);
       }
     `,
     fragmentShader: /* glsl */ `
@@ -2947,21 +2952,12 @@ export function createAndromedaStarsMaterial(maps: AndromedaDiskMaps): THREE.Sha
       void main() {
         vec2 p = gl_PointCoord - 0.5;
         float r2 = dot(p, p);
-        if (vSpike <= 0.05 && r2 > 0.25) discard;
-        if (max(abs(p.x), abs(p.y)) > 0.495) discard;
+        if (r2 > 0.25) discard;
 
         float core = exp(-r2 * 64.0) + exp(-r2 * 16.0) * 0.28;
         float disc = core * (1.0 - smoothstep(0.14, 0.25, r2));
 
-        float spikes = 0.0;
-        if (vSpike > 0.05) {
-          float edgeTaper = (1.0 - smoothstep(0.16, 0.48, abs(p.x))) * (1.0 - smoothstep(0.16, 0.48, abs(p.y)));
-          float sx = exp(-abs(p.y) * 38.0) * exp(-abs(p.x) * 7.5);
-          float sy = exp(-abs(p.x) * 38.0) * exp(-abs(p.y) * 7.5);
-          spikes = (sx + sy) * edgeTaper * vSpike * 0.55;
-        }
-
-        float a = clamp((disc + spikes) * vAlpha, 0.0, 0.95);
+        float a = clamp(disc * vAlpha, 0.0, 0.68);
         if (a < 0.004) discard;
         gl_FragColor = vec4(vCol, a);
       }
@@ -3067,6 +3063,7 @@ export function createDwarfEllipticalMaterial(isDiffuseM110: boolean): THREE.Sha
         }
 
         accum = accum / (1.0 + accum * 0.56);
+        accum = min(accum, vec3(1.05));
         float opacity = clamp(1.0 - dot(T, vec3(0.30, 0.52, 0.18)), 0.0, 0.86);
         float radAlpha = clamp(max(accum.r, max(accum.g, accum.b)) * 0.88, 0.0, 0.84);
         float finalAlpha = max(opacity, radAlpha);
