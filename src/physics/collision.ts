@@ -34,6 +34,9 @@ export function resolveCollisions(
     for (let j = i + 1; j < n; j++) {
       const b = bodies[j];
       if (!b.alive) continue;
+      if (a.isGravitationalLens || b.isGravitationalLens || a.isLensSource || b.isLensSource) {
+        continue;
+      }
 
       const d = distVec3(a.position, b.position);
       const ra =
@@ -261,7 +264,7 @@ export function resolveRocheTidalTearing(
     // Black holes & neutron stars do not tidally disrupt from normal planets/stars
     if (victim.category === 'black_hole' || victim.category === 'neutron_star') continue;
     // White dwarfs are degenerate compact stars; stars near black holes are handled by gradual TDE spaghettification
-    if (victim.isWhiteDwarf) continue;
+    if (victim.isWhiteDwarf || victim.isLensSource || victim.isGravitationalLens) continue;
 
     for (let j = 0; j < n; j++) {
       if (i === j) continue;

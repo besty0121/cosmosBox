@@ -30,6 +30,11 @@ export function computeAccelerations(bodies: CelestialBody[]): number {
     for (let j = i + 1; j < n; j++) {
       const bj = bodies[j];
       if (!bj.alive) continue;
+      // Cosmological gravitational-lensing background sources lie billions of light-years behind the lens
+      // (skip local close-range Newtonian collapse between foreground lens & distant background galaxy)
+      if ((bi.isGravitationalLens && bj.isLensSource) || (bj.isGravitationalLens && bi.isLensSource)) {
+        continue;
+      }
 
       const dx = bj.position.x - bi.position.x;
       const dy = bj.position.y - bi.position.y;

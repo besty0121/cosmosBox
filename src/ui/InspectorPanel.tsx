@@ -601,6 +601,60 @@ export function InspectorPanel() {
           </div>
         )}
 
+        {/* Gravitational Lensing Controls (Einstein Ring <-> 4-Image Einstein Cross) */}
+        {body.isGravitationalLens && (() => {
+          const shearVal = body.lensShear ?? 0;
+          const modeLabel =
+            shearVal < 0.05
+              ? '完美爱因斯坦环'
+              : shearVal < 0.16
+                ? '椭圆透镜双弧'
+                : '四重爱因斯坦十字';
+          return (
+            <div className="control-section">
+              <div className="section-title">广义相对论引力透镜</div>
+              <div className="slider-row">
+                <div className="slider-header">
+                  <span>四极剪切 / 椭率 (γ)</span>
+                  <span className="mono" style={{ color: '#8ad8ff' }}>
+                    {shearVal.toFixed(2)} · {modeLabel}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  className="cosmos-slider"
+                  min={0}
+                  max={0.28}
+                  step={0.01}
+                  value={shearVal}
+                  onChange={(e) =>
+                    updateBodyProps(body.id, { lensShear: parseFloat(e.target.value) })
+                  }
+                />
+              </div>
+              <div className="btn-row" style={{ marginTop: 6 }}>
+                <button
+                  className={`hud-btn ${shearVal < 0.05 ? 'active' : ''}`}
+                  style={{ flex: 1, justifyContent: 'center' }}
+                  onClick={() => updateBodyProps(body.id, { lensShear: 0.0 })}
+                >
+                  ⭕ 爱因斯坦环
+                </button>
+                <button
+                  className={`hud-btn ${shearVal >= 0.18 ? 'active' : ''}`}
+                  style={{ flex: 1, justifyContent: 'center' }}
+                  onClick={() => updateBodyProps(body.id, { lensShear: 0.24 })}
+                >
+                  ✚ 爱因斯坦十字
+                </button>
+              </div>
+              <div style={{ fontSize: 11, opacity: 0.72, marginTop: 6, lineHeight: 1.45 }}>
+                拖动鼠标环绕透镜可实时弯折背景星系弧；调节上方质量（×0.5 / ×2）可实时缩放爱因斯坦半径 θₑ ∝ √M。
+              </div>
+            </div>
+          );
+        })()}
+
         {/* Stellar Evolution / CME & Supernova Triggers */}
         {body.category === 'star' && (
           <div className="control-section">

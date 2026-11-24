@@ -259,7 +259,11 @@ export class SceneManager {
     this.animate();
   }
 
-  public frameScenario(distanceAU: number, focusBodyName?: string): void {
+  public frameScenario(
+    distanceAU: number,
+    focusBodyName?: string,
+    cameraAngles?: { azimuthDeg: number; elevationDeg: number }
+  ): void {
     this.exitSpecialCameraMode(false);
     this.originMeters = { x: 0, y: 0, z: 0 };
     if (focusBodyName) {
@@ -276,7 +280,18 @@ export class SceneManager {
 
     const dist = Math.max(distanceAU, 0.015) * SCENE_UNITS_PER_AU;
     this.controls.target.set(0, 0, 0);
-    this.camera.position.set(dist * 0.25, dist * 0.54, dist * 0.92);
+    if (cameraAngles) {
+      const az = (cameraAngles.azimuthDeg * Math.PI) / 180;
+      const el = (cameraAngles.elevationDeg * Math.PI) / 180;
+      const cosEl = Math.cos(el);
+      this.camera.position.set(
+        dist * cosEl * Math.sin(az),
+        dist * Math.sin(el),
+        dist * cosEl * Math.cos(az)
+      );
+    } else {
+      this.camera.position.set(dist * 0.25, dist * 0.54, dist * 0.92);
+    }
     this.camera.up.set(0, 1, 0);
     this.controls.update();
   }

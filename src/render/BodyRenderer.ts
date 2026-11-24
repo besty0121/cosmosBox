@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { AU, L_SUN, METERS_TO_SCENE, R_EARTH, R_SUN } from '../physics/constants';
+import { AU, L_SUN, M_SUN, METERS_TO_SCENE, R_EARTH, R_SUN } from '../physics/constants';
 import { CelestialBody, CmeWave, ScaleMode, Vec3 } from '../types/cosmos';
 import {
   createAtmosphereMaterial,
@@ -9,6 +9,9 @@ import {
   createCometParticleStreamMaterial,
   createCometRibbonMaterial,
   createEarthAuroraMaterial,
+  createGravitationalLensMaterial,
+  createIoSurfaceMaterial,
+  createJupiterAuroraMaterial,
   createProminenceMaterial,
   createPulsarJetMaterial,
   createRingMaterial,
@@ -108,6 +111,8 @@ export const SHARED_PROMINENCE_GEO = buildProminenceCurtainGeometry();
 // Single lightweight outer bounding sphere for true single-pass 3D volumetric raymarched Earth aurora!
 // Eliminates all shell slicing, plastic ribbon edges, and overdraw — raymarches real 90-450km thermosphere volume.
 const SHARED_EARTH_AURORA_GEO = new THREE.SphereGeometry(1.09, 48, 36);
+const SHARED_JUPITER_AURORA_GEO = new THREE.SphereGeometry(1.038, 48, 36);
+const SHARED_LENS_VOLUME_GEO = new THREE.SphereGeometry(22.0, 48, 32);
 
 interface ProminenceSlot {
   mesh: THREE.Mesh;
@@ -126,6 +131,8 @@ export interface BodyVisual {
   cloudMesh?: THREE.Mesh;
   atmosphereMesh?: THREE.Mesh;
   auroraMesh?: THREE.Mesh;
+  jupiterAuroraMesh?: THREE.Mesh;
+  lensVolume?: THREE.Mesh;
   ringMesh?: THREE.Mesh;
   coronaMesh?: THREE.Mesh;
   prominenceGroup?: THREE.Group;
@@ -159,7 +166,9 @@ export function computeVisualRadius(
   }
 
   let playableRadius: number;
-  if (body.category === 'black_hole') {
+  if (body.isGravitationalLens) {
+    playableRadius = 2.6;
+  } else if (body.category === 'black_hole') {
     // Wide 12.2x Gargantua accretion disk spans ~18 scene units at r = 1.45
     playableRadius = 1.45 * Math.pow(Math.max(0.25, body.mass / (12 * 1.98847e30)), 0.14);
   } else if (body.category === 'neutron_star') {
@@ -187,6 +196,8 @@ export class BodyRenderer {
   private tempOffset = new THREE.Vector3();
   private tempColor = new THREE.Color();
   private lastElapsedTime = 0;
+  private lastSelectedId: string | null = null;
+  private selectedAtTime = 0;
   private tempAntiSolar = new THREE.Vector3();
   private tempAntiVel = new THREE.Vector3();
   private tempTailTarget = new THREE.Vector3();
@@ -205,15 +216,71 @@ export class BodyRenderer {
     this.scene = scene;
     this.textures = textures;
 
-    const selGeo = new THREE.RingGeometry(1.36, 1.44, 72);
-    const selMat = new THREE.MeshBasicMaterial({
-      color: '#5ce1ff',
+    // Refined aerospace / planetarium-grade minimal 4-corner targeting reticle (fwidth 1.2px hairline!)
+    // Replaces the harsh thick neon-cyan solid ring with delicate tapered corner brackets that auto-fade on close-up.
+    const selGeo = new THREE.PlaneGeometry(3.2, 3.2);
+    const selMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uFade: { value: 1.0 },
+        uSelectAge: { value: 1.0 },
+      },
+      vertexShader: /* glsl */ `
+        varying vec2 vPos;
+        void main() {
+          vPos = position.xy; // [-1.6 .. +1.6]
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform float uTime;
+        uniform float uFade;
+        uniform float uSelectAge;
+        varying vec2 vPos;
+
+        void main() {
+          if (uFade < 0.01) discard;
+          float r = length(vPos);
+          // Crisp constant ~1.25px screen-space hairline width regardless of zoom level!
+          float px = max(fwidth(r), 0.0025);
+
+          // Gentle subtle contraction animation on fresh click (0.35s)
+          float intro = 1.0 + 0.09 * exp(-uSelectAge * 9.0);
+          float ringR = 1.26 * intro;
+
+          // 4 razor-crisp curved corner brackets at 45°, 135°, 225°, 315° (~26° arc, tapered ends, ZERO fuzzy bloom!)
+          float ang = atan(vPos.y, vPos.x);
+          float qAng = abs(mod(ang + 3.14159265, 1.5707963) - 0.78539816);
+          float bracketSpan = smoothstep(0.28, 0.14, qAng);
+
+          float distRing = abs(r - ringR);
+          float arcLine = (1.0 - smoothstep(px * 0.25, px * 1.15, distRing)) * bracketSpan;
+
+          // 4 ultra-fine outward corner ticks at exact 45° diagonals
+          float tickRad = smoothstep(ringR - px * 0.5, ringR + px * 0.5, r) * smoothstep(ringR + 0.095, ringR + 0.055, r);
+          float tickLine = (1.0 - smoothstep(px * 0.25, px * 1.10, qAng * max(r, 0.2))) * tickRad * 0.72;
+
+          float shape = max(arcLine, tickLine);
+          if (shape < 0.01) discard;
+
+          // Subtle calm breathing + soft flash on initial click
+          float breath = 0.90 + 0.10 * sin(uTime * 2.0);
+          float clickBoost = 1.0 + 0.35 * exp(-uSelectAge * 5.0);
+
+          vec3 col = vec3(0.68, 0.86, 0.98);
+          float alpha = clamp(shape * 0.42 * breath * clickBoost * uFade, 0.0, 0.58);
+          if (alpha < 0.005) discard;
+          gl_FragColor = vec4(col, alpha);
+        }
+      `,
       side: THREE.DoubleSide,
       transparent: true,
-      opacity: 0.72,
+      blending: THREE.NormalBlending,
       depthWrite: false,
+      depthTest: false,
     });
     this.selectionRing = new THREE.Mesh(selGeo, selMat);
+    this.selectionRing.renderOrder = 20;
     this.selectionRing.visible = false;
     this.scene.add(this.selectionRing);
   }
@@ -564,6 +631,62 @@ export class BodyRenderer {
         }
       }
 
+      if (vis.jupiterAuroraMesh) {
+        const jupAurora = body.auroraIntensity ?? 1.15;
+        vis.jupiterAuroraMesh.visible = jupAurora > 0.01;
+        if (vis.jupiterAuroraMesh.visible) {
+          vis.jupiterAuroraMesh.scale.setScalar(r);
+          vis.root.updateMatrixWorld(true);
+          const jaMat = vis.jupiterAuroraMesh.material as THREE.ShaderMaterial;
+          jaMat.uniforms.uTime.value = elapsedTime;
+          jaMat.uniforms.uIntensity.value = jupAurora;
+
+          // Live-track volcanic Io's orbital direction into Jupiter's frame for the glowing Io auroral footprint & tail!
+          const ioBody = bodies.find((b) => b.alive && b.volcanicIo);
+          const ioVis = ioBody ? this.visuals.get(ioBody.id) : undefined;
+          if (ioVis) {
+            jaMat.uniforms.uHasIo.value = 1.0;
+            this.tempInvQuat.setFromRotationMatrix(vis.tiltGroup.matrixWorld).invert();
+            this.tempOffset
+              .subVectors(ioVis.renderedPos, vis.renderedPos)
+              .normalize()
+              .applyQuaternion(this.tempInvQuat)
+              .normalize();
+            jaMat.uniforms.uIoDirLocal.value.copy(this.tempOffset);
+          } else {
+            jaMat.uniforms.uHasIo.value = 0.0;
+          }
+        }
+      }
+
+      if (vis.lensVolume) {
+        vis.lensVolume.scale.setScalar(r);
+        const lMat = vis.lensVolume.material as THREE.ShaderMaterial;
+        lMat.uniforms.uTime.value = elapsedTime;
+        lMat.uniforms.uLensCenter.value.copy(vis.renderedPos);
+        lMat.uniforms.uLensShear.value = body.lensShear ?? 0.0;
+
+        const camDistLens = Math.max(8.0, camera.position.distanceTo(vis.renderedPos));
+        const sphereR = 22.0 * r;
+        const maxAngle = Math.min(1.18, Math.atan2(sphereR * 0.96, Math.max(sphereR * 0.35, camDistLens)));
+        lMat.uniforms.uMaxAngle.value = Math.max(0.28, maxAngle);
+
+        // Exact GR Einstein Radius scaling: theta_E ∝ sqrt(M / D_L)! Editing lens mass expands/contracts the ring live!
+        const massScale = Math.sqrt(Math.max(0.15, body.mass / (1.0e12 * M_SUN)));
+        const distScale = Math.sqrt(92.0 / Math.max(24.0, camDistLens));
+        lMat.uniforms.uEinsteinRadius.value = THREE.MathUtils.clamp(0.195 * massScale * distScale, 0.075, 0.38);
+
+        // Live 3D direction from foreground lens to background source galaxy/quasar!
+        const srcBody = bodies.find((b) => b.alive && b.isLensSource);
+        const srcVis = srcBody ? this.visuals.get(srcBody.id) : undefined;
+        if (srcVis) {
+          this.tempOffset.subVectors(srcVis.renderedPos, vis.renderedPos).normalize();
+          lMat.uniforms.uSourceDirWorld.value.copy(this.tempOffset);
+        } else {
+          lMat.uniforms.uSourceDirWorld.value.set(0, 0, -1);
+        }
+      }
+
       if (vis.blackHoleVolume) {
         vis.blackHoleVolume.scale.setScalar(r);
         vis.root.updateMatrixWorld(true);
@@ -727,7 +850,7 @@ export class BodyRenderer {
         syncStarLights(vis.surfaceMaterial, occCount);
       }
 
-      vis.trailLine.visible = showTrails && body.trail.length > 1;
+      vis.trailLine.visible = showTrails && body.trail.length > 1 && !body.isLensSource && !body.isGravitationalLens;
       if (vis.trailLine.visible) {
         const trail = body.trail;
         const count = Math.min(trail.length, MAX_TRAIL_VERTS);
@@ -754,14 +877,30 @@ export class BodyRenderer {
       }
     }
 
-    if (selectedVis) {
-      this.selectionRing.visible = true;
-      this.selectionRing.position.copy(selectedVis.renderedPos);
-      this.selectionRing.quaternion.copy(camera.quaternion);
-      const camDist = camera.position.distanceTo(selectedVis.renderedPos);
-      const baseMult = selectedVis.category === 'black_hole' ? 4.5 : 1.18;
-      const ringScale = Math.max(selectedVis.renderedRadius * baseMult, camDist * 0.024);
-      this.selectionRing.scale.setScalar(ringScale);
+    if (selectedId !== this.lastSelectedId) {
+      this.lastSelectedId = selectedId;
+      this.selectedAtTime = elapsedTime;
+    }
+
+    const selectedBody = selectedId ? this.bodyLookup.get(selectedId) : undefined;
+    if (selectedVis && !selectedBody?.isGravitationalLens && !selectedBody?.isLensSource) {
+      const camDist = Math.max(0.1, camera.position.distanceTo(selectedVis.renderedPos));
+      const baseMult = selectedVis.category === 'black_hole' ? 3.8 : 1.14;
+      const ringScale = Math.max(selectedVis.renderedRadius * baseMult, camDist * 0.022);
+      // Smoothly fade reticle away when zoomed very close to inspect auroras / prominences / surface detail!
+      const angularHalfSize = (ringScale * 1.26) / camDist;
+      const closeFade = 1.0 - THREE.MathUtils.smoothstep(angularHalfSize, 0.20, 0.46);
+
+      this.selectionRing.visible = closeFade > 0.02;
+      if (this.selectionRing.visible) {
+        this.selectionRing.position.copy(selectedVis.renderedPos);
+        this.selectionRing.quaternion.copy(camera.quaternion);
+        this.selectionRing.scale.setScalar(ringScale);
+        const selMat = this.selectionRing.material as THREE.ShaderMaterial;
+        selMat.uniforms.uTime.value = elapsedTime;
+        selMat.uniforms.uFade.value = closeFade;
+        selMat.uniforms.uSelectAge.value = Math.max(0, elapsedTime - this.selectedAtTime);
+      }
     } else {
       this.selectionRing.visible = false;
     }
@@ -776,7 +915,11 @@ export class BodyRenderer {
     let surfaceMaterial: THREE.Material;
     let useEarthClouds = false;
 
-    if (body.category === 'star' || body.category === 'neutron_star') {
+    if (body.isGravitationalLens || body.isLensSource) {
+      surfaceMaterial = new THREE.MeshBasicMaterial({ visible: false });
+    } else if (body.volcanicIo) {
+      surfaceMaterial = createIoSurfaceMaterial(body, this.textures);
+    } else if (body.category === 'star' || body.category === 'neutron_star') {
       surfaceMaterial = createStarMaterial(body, this.textures);
     } else if (body.category === 'black_hole') {
       surfaceMaterial = new THREE.MeshBasicMaterial({ visible: false });
@@ -841,6 +984,23 @@ export class BodyRenderer {
       auroraMesh.renderOrder = 3;
       auroraMesh.visible = (body.auroraIntensity ?? 0.78) > 0.01 && body.atmosphereDensity > 0.15;
       tiltGroup.add(auroraMesh);
+    }
+
+    let jupiterAuroraMesh: THREE.Mesh | undefined;
+    if (body.jupiterTorus) {
+      const jaMat = createJupiterAuroraMaterial();
+      jupiterAuroraMesh = new THREE.Mesh(SHARED_JUPITER_AURORA_GEO, jaMat);
+      jupiterAuroraMesh.renderOrder = 3;
+      tiltGroup.add(jupiterAuroraMesh);
+    }
+
+    let lensVolume: THREE.Mesh | undefined;
+    if (body.isGravitationalLens) {
+      const lMat = createGravitationalLensMaterial();
+      lensVolume = new THREE.Mesh(SHARED_LENS_VOLUME_GEO, lMat);
+      lensVolume.frustumCulled = false;
+      lensVolume.renderOrder = 3;
+      root.add(lensVolume);
     }
 
     let atmosphereMesh: THREE.Mesh | undefined;
@@ -923,7 +1083,7 @@ export class BodyRenderer {
     }
 
     let blackHoleVolume: THREE.Mesh | undefined;
-    if (body.category === 'black_hole') {
+    if (body.category === 'black_hole' && !body.isGravitationalLens) {
       const bhMat = createBlackHoleLensingMaterial(body, this.textures);
       blackHoleVolume = new THREE.Mesh(SHARED_BH_VOLUME_GEO, bhMat);
       blackHoleVolume.renderOrder = 3;
@@ -1017,6 +1177,8 @@ export class BodyRenderer {
       cloudMesh,
       atmosphereMesh,
       auroraMesh,
+      jupiterAuroraMesh,
+      lensVolume,
       ringMesh,
       coronaMesh,
       prominenceGroup,
@@ -1043,6 +1205,8 @@ export class BodyRenderer {
     if (vis.cloudMesh) (vis.cloudMesh.material as THREE.Material).dispose();
     if (vis.atmosphereMesh) (vis.atmosphereMesh.material as THREE.Material).dispose();
     if (vis.auroraMesh) (vis.auroraMesh.material as THREE.Material).dispose();
+    if (vis.jupiterAuroraMesh) (vis.jupiterAuroraMesh.material as THREE.Material).dispose();
+    if (vis.lensVolume) (vis.lensVolume.material as THREE.Material).dispose();
     if (vis.ringMesh) {
       vis.ringMesh.geometry.dispose();
       (vis.ringMesh.material as THREE.Material).dispose();

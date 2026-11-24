@@ -931,6 +931,377 @@ function createBlazarJetMaterial(sign: 1 | -1): THREE.ShaderMaterial {
   });
 }
 
+// ============================================================================
+// 6. NASA JUNO / NEW HORIZONS JUPITER–IO VOLCANIC PLUMES, PLASMA TORUS & FLUX TUBE
+// ============================================================================
+
+// 6A. Ballistic Volcanic Umbrella Plume Geometry (Tvashtar / Pele fountain rising along +Y & arching gracefully downward)
+function buildIoPlumeGeometry(): THREE.BufferGeometry {
+  const radSegs = 28;
+  const hSegs = 22;
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+
+  for (let iy = 0; iy <= hSegs; iy++) {
+    const v = iy / hSegs; // 0 = volcanic vent on Io surface, 0.58 = ballistic apex, 1.0 = outer umbrella skirt
+    let radius: number;
+    let y: number;
+    if (v <= 0.58) {
+      const t = v / 0.58;
+      radius = 0.022 + Math.pow(t, 1.65) * 0.16;
+      y = 0.99 + Math.sin(t * Math.PI * 0.5) * 0.42;
+    } else {
+      const t = (v - 0.58) / 0.42;
+      radius = 0.182 + t * 0.28;
+      y = 1.41 - t * t * 0.24;
+    }
+
+    for (let ix = 0; ix <= radSegs; ix++) {
+      const u = ix / radSegs;
+      const ang = u * Math.PI * 2;
+      const ca = Math.cos(ang);
+      const sa = Math.sin(ang);
+      positions.push(ca * radius, y, sa * radius);
+      normals.push(ca, v > 0.58 ? 0.55 : 0.2, sa);
+      uvs.push(u, v);
+    }
+  }
+
+  const stride = radSegs + 1;
+  for (let iy = 0; iy < hSegs; iy++) {
+    for (let ix = 0; ix < radSegs; ix++) {
+      const a = iy * stride + ix;
+      const b = a + 1;
+      const c = a + stride;
+      const d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// 6B. Co-Rotating Io Plasma Torus Micro-Ions Geometry (520 subtle ionized sulfur/oxygen particles)
+function buildIoTorusParticlesGeometry(count = 520): THREE.BufferGeometry {
+  const pos = new Float32Array(count * 3);
+  const params = new Float32Array(count * 4); // (azimuth, tubeAngle, tubeRadius [0..1], speedSeed)
+  let s = 7717;
+  const rand = () => {
+    s = (s * 16807) % 2147483647;
+    return (s - 1) / 2147483646;
+  };
+  for (let i = 0; i < count; i++) {
+    params[i * 4] = rand() * Math.PI * 2;
+    params[i * 4 + 1] = rand() * Math.PI * 2;
+    params[i * 4 + 2] = Math.pow(rand(), 0.65);
+    params[i * 4 + 3] = rand();
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('aTorusP', new THREE.BufferAttribute(params, 4));
+  return geo;
+}
+
+// 6C. 3D Braided Dipole Magnetic Flux Tube connecting Io (equator, +X) directly into Jupiter's 67° N/S polar auroral footprints!
+function buildIoFluxTubeGeometry(): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const meta: number[] = []; // (u along tube from Io [0] to Jupiter polar footprint [1], strandIndex, hemi [+1/-1])
+  const strands = 7;
+  const steps = 40;
+
+  for (const hemi of [1, -1]) {
+    for (let k = 0; k < strands; k++) {
+      for (let i = 0; i < steps; i++) {
+        const u0 = i / steps;
+        const u1 = (i + 1) / steps;
+        positions.push(0, 0, 0, 0, 0, 0); // dynamically arched onto exact Jupiter 67° polar footprint in GPU vertex shader!
+        meta.push(u0, k, hemi, u1, k, hemi);
+      }
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('aFluxMeta', new THREE.Float32BufferAttribute(meta, 3));
+  return geo;
+}
+
+const SHARED_IO_PLUME_GEO = buildIoPlumeGeometry();
+const SHARED_IO_TORUS_GEO = new THREE.TorusGeometry(1.0, 0.165, 28, 96);
+const SHARED_IO_TORUS_PARTICLES_GEO = buildIoTorusParticlesGeometry(520);
+const SHARED_IO_FLUX_TUBE_GEO = buildIoFluxTubeGeometry();
+
+function createIoPlumeMaterial(seed: number): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uSeed: { value: seed },
+    },
+    vertexShader: /* glsl */ `
+      varying vec2 vUv;
+      varying vec3 vNormalWorld;
+      varying vec3 vWorldPos;
+      void main() {
+        vUv = uv;
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorldPos = wp.xyz;
+        vNormalWorld = normalize(mat3(modelMatrix) * normal);
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform float uTime;
+      uniform float uSeed;
+      varying vec2 vUv;
+      varying vec3 vNormalWorld;
+      varying vec3 vWorldPos;
+      ${GLSL_NOISE_HELPERS}
+
+      void main() {
+        float v = vUv.y; // 0 = volcanic caldera vent, 0.58 = ballistic apex, 1.0 = outer umbrella edge
+        float edgeFade = smoothstep(0.0, 0.10, v) * pow(smoothstep(1.0, 0.42, v), 1.55);
+        if (edgeFade < 0.005) discard;
+
+        // Strictly upward & outward rising volcanic gas filaments (New Horizons Tvashtar backlit blue-silver veil!)
+        float wisp1 = hFbm2(vec2(vUv.x * 8.0 + uSeed, v * 5.0 - uTime * 0.65));
+        float wisp2 = hFbm2(vec2(vUv.x * 16.0 - uSeed * 1.7, v * 9.0 - uTime * 1.05));
+        float mist = 0.38 + 0.78 * wisp1 * (0.55 + 0.55 * wisp2);
+
+        // Buttery-soft volumetric grazing silhouette feathering -> ZERO crisp geometric dome/cup rim!
+        vec3 N = normalize(vNormalWorld);
+        vec3 V = normalize(cameraPosition - vWorldPos);
+        float viewSoft = pow(smoothstep(0.08, 0.74, abs(dot(N, V))), 1.35);
+
+        // Hot molten sulfur vent glow right at the base -> cool backlit bluish-silver / pale-gold SO2 umbrella above!
+        float baseHot = exp(-v * 9.0);
+        vec3 lavaVent = vec3(1.85, 0.72, 0.16);
+        vec3 sulfurVeil = vec3(0.76, 0.90, 1.24);
+        vec3 paleGold = vec3(1.18, 1.02, 0.74);
+        vec3 canopyCol = mix(sulfurVeil, paleGold, smoothstep(0.3, 0.8, wisp1) * 0.45);
+        vec3 col = mix(canopyCol, lavaVent, baseHot);
+
+        float alpha = clamp(edgeFade * mist * viewSoft * (0.44 + 0.52 * baseHot), 0.0, 0.74);
+        if (alpha < 0.004) discard;
+        gl_FragColor = vec4(col, alpha);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+}
+
+function createIoTorusMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uIoAngle: { value: 0 },
+    },
+    vertexShader: /* glsl */ `
+      varying vec2 vUv;
+      varying vec3 vLocalPos;
+      varying vec3 vNormalWorld;
+      varying vec3 vWorldPos;
+      void main() {
+        vUv = uv;
+        vLocalPos = position;
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorldPos = wp.xyz;
+        vNormalWorld = normalize(mat3(modelMatrix) * normal);
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform float uTime;
+      uniform float uIoAngle;
+      varying vec2 vUv;
+      varying vec3 vLocalPos;
+      varying vec3 vNormalWorld;
+      varying vec3 vWorldPos;
+      ${GLSL_NOISE_HELPERS}
+
+      void main() {
+        // Ultra-soft volumetric grazing feathering: outer torus silhouette ALWAYS dissolves ethereally to 0!
+        vec3 N = normalize(vNormalWorld);
+        vec3 V = normalize(cameraPosition - vWorldPos);
+        float ndv = abs(dot(N, V));
+        float volSoft = pow(smoothstep(0.14, 0.88, ndv), 1.85);
+        if (volSoft < 0.004) discard;
+
+        // 100% SEAMLESS 360° periodic 3D noise (ZERO azimuthal UV wrap seam anywhere on the torus!)
+        float az = atan(vLocalPos.y, vLocalPos.x);
+        float rotAz = az - uTime * 0.22;
+        vec3 p3 = vec3(cos(rotAz) * 2.1, sin(rotAz) * 2.1, vLocalPos.z * 4.2);
+        vec3 q3 = vec3(
+          hFbm3(p3 + vec3(1.3, 4.7, 2.1)),
+          hFbm3(p3 + vec3(6.2, 2.1, 3.8)),
+          hFbm3(p3 + vec3(3.7, 8.4, 1.5))
+        );
+        float f = hFbm3(p3 * 1.45 + q3 * 1.15);
+        float wisps = 0.35 + 0.85 * pow(clamp(1.0 - abs(f * 2.0 - 1.0), 0.0, 1.0), 1.5);
+
+        float dIo = atan(sin(az - uIoAngle), cos(az - uIoAngle));
+        float ioWake = 0.55 + 0.65 * exp(-pow(dIo / 1.15, 2.0));
+
+        // Authentic NASA Juno/UVS Io Plasma Torus palette: ghostly UV indigo-violet outer torus + warm sulfur-amber inner ribbon
+        vec3 uvIndigo = vec3(0.36, 0.24, 1.15);
+        vec3 uvCyan = vec3(0.32, 0.72, 1.38);
+        vec3 sulfurAmber = vec3(1.18, 0.72, 0.28);
+
+        vec3 col = mix(uvIndigo, uvCyan, smoothstep(0.25, 0.80, f));
+        col = mix(col, sulfurAmber, clamp((ioWake - 0.55) * 0.85 + pow(ndv, 2.2) * 0.35, 0.0, 0.72));
+
+        float alpha = clamp(volSoft * wisps * ioWake * 0.22, 0.0, 0.34);
+        if (alpha < 0.003) discard;
+        gl_FragColor = vec4(col, alpha);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.FrontSide,
+  });
+}
+
+function createIoTorusParticlesMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uIoAngle: { value: 0 },
+    },
+    vertexShader: /* glsl */ `
+      attribute vec4 aTorusP; // (az0, tubeAng, tubeR, seed)
+      uniform float uTime;
+      uniform float uIoAngle;
+
+      varying float vWake;
+      varying float vSeed;
+
+      void main() {
+        float az = aTorusP.x + uTime * (0.28 + 0.14 * aTorusP.w);
+        float tAng = aTorusP.y + uTime * 0.45;
+        float tRad = aTorusP.z * 0.155;
+        vSeed = aTorusP.w;
+
+        float rMajor = 1.0 + cos(tAng) * tRad;
+        float zOff = sin(tAng) * tRad * 0.75; // slightly flattened centrifugally along Jupiter's equator
+        vec3 localPos = vec3(cos(az) * rMajor, sin(az) * rMajor, zOff);
+
+        float dIo = atan(sin(az - uIoAngle), cos(az - uIoAngle));
+        vWake = exp(-pow(dIo / 1.1, 2.0));
+
+        vec4 mvPos = modelViewMatrix * vec4(localPos, 1.0);
+        gl_Position = projectionMatrix * mvPos;
+        gl_PointSize = clamp((1.5 + 1.4 * vWake) * (36.0 / max(4.0, -mvPos.z)), 1.4, 3.8);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      varying float vWake;
+      varying float vSeed;
+      void main() {
+        vec2 p = gl_PointCoord - 0.5;
+        float r2 = dot(p, p);
+        if (r2 > 0.25) discard;
+        float core = exp(-r2 * 48.0);
+        vec3 violetIon = vec3(0.55, 0.62, 1.55);
+        vec3 sulfurSpark = vec3(1.55, 1.05, 0.42);
+        vec3 col = mix(violetIon, sulfurSpark, clamp(vWake * 0.75 + vSeed * 0.25, 0.0, 1.0));
+        float a = clamp(core * (0.32 + 0.45 * vWake), 0.0, 0.82);
+        if (a < 0.005) discard;
+        gl_FragColor = vec4(col, a);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+}
+
+function createIoFluxTubeMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uJupRatio: { value: 0.32 },
+    },
+    vertexShader: /* glsl */ `
+      attribute vec3 aFluxMeta; // (u [0=Io -> 1=Jupiter 67° polar footprint], strandIdx, hemi)
+      uniform float uJupRatio;
+
+      varying float vU;
+      varying float vPhase;
+
+      void main() {
+        float u = aFluxMeta.x;
+        float k = aFluxMeta.y;
+        float hemi = aFluxMeta.z;
+        vU = u;
+        vPhase = k * 0.91 + (hemi > 0.0 ? 0.0 : 2.1);
+
+        // Exact cubic Bezier dipole-like magnetic flux tube from Io (1, 0, 0)
+        // curving gracefully up and landing DEAD-CENTER onto Jupiter's 67° N/S Io Auroral Footprint!
+        float footLat = 1.169; // 67 deg -> sin(67°) = 0.920 matches createJupiterAuroraMaterial!
+        float jR = uJupRatio * 1.036;
+        vec3 p0 = vec3(1.0, 0.0, 0.0);
+        vec3 p3 = vec3(jR * cos(footLat), hemi * jR * sin(footLat), 0.0);
+        vec3 p1 = vec3(0.96, hemi * max(0.58, jR * 1.12), 0.06);
+        vec3 p2 = vec3(jR * 0.82, hemi * max(0.76, jR * 1.38), 0.04);
+
+        float om = 1.0 - u;
+        vec3 spine =
+          om * om * om * p0 +
+          3.0 * om * om * u * p1 +
+          3.0 * om * u * u * p2 +
+          u * u * u * p3;
+
+        // Braided multi-strand flux-tube thickness tapering smoothly to a crisp focal point right at the auroral footprint!
+        float angOff = (k / 7.0) * 6.2831853 + u * 5.2;
+        float spread = (k < 0.5 ? 0.0 : 0.028) * (1.0 - 0.78 * u);
+        spine.x += cos(angOff) * spread;
+        spine.z += sin(angOff) * spread;
+
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(spine, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform float uTime;
+      varying float vU;
+      varying float vPhase;
+      void main() {
+        // 400,000-volt Alfven electrical current waves racing strictly from Io (u=0) into Jupiter's N/S polar footprint (u=1)!
+        float pulse = pow(0.5 + 0.5 * sin(vU * 18.0 - uTime * 5.8 + vPhase), 3.0);
+        float endFade = smoothstep(0.0, 0.05, vU) * smoothstep(1.0, 0.94, vU);
+        float footFlare = exp(-pow((1.0 - vU) / 0.12, 2.0)) * 0.65;
+        vec3 violetCurrent = vec3(0.45, 0.55, 1.65);
+        vec3 cyanBolt = vec3(0.72, 1.58, 2.30);
+        vec3 col = mix(violetCurrent, cyanBolt, clamp(pulse * 0.85 + footFlare + smoothstep(0.65, 1.0, vU) * 0.35, 0.0, 1.0));
+        float alpha = clamp(endFade * (0.28 + 0.62 * pulse + footFlare), 0.0, 0.94);
+        if (alpha < 0.005) discard;
+        gl_FragColor = vec4(col, alpha);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+}
+
+interface JupiterIoVisual {
+  torusMesh: THREE.Mesh;
+  torusParticles: THREE.Points;
+  fluxTube: THREE.LineSegments;
+  plumeGroup: THREE.Group;
+  plumeMats: THREE.ShaderMaterial[];
+}
+
 interface CmeVisual {
   group: THREE.Group;
   solarWindParticles: THREE.Points;
@@ -955,6 +1326,7 @@ export class HighEnergyRenderer {
   private magnetoMap = new Map<string, THREE.LineSegments>();
   private streamMap = new Map<string, StreamVisual>();
   private blazarMap = new Map<string, BlazarVisual>();
+  private jupiterIoVis: JupiterIoVisual | null = null;
 
   private tempOrigin = new THREE.Vector3();
   private tempDir = new THREE.Vector3();
@@ -984,6 +1356,7 @@ export class HighEnergyRenderer {
     this.syncMagnetospheres(bodies, bodyRenderer, elapsedTime, showSpaceWeatherField);
     this.syncTidalStreams(bodies, tidalStreams, bodyRenderer, elapsedTime);
     this.syncBlazarJets(bodies, bodyRenderer, elapsedTime);
+    this.syncJupiterIoSystem(bodies, bodyRenderer, elapsedTime, showSpaceWeatherField);
   }
 
   private syncCmes(
@@ -1386,6 +1759,136 @@ export class HighEnergyRenderer {
     }
   }
 
+  private syncJupiterIoSystem(
+    bodies: CelestialBody[],
+    bodyRenderer: BodyRenderer,
+    elapsedTime: number,
+    showSpaceWeatherField: boolean
+  ): void {
+    const jup = bodies.find((b) => b.alive && b.jupiterTorus);
+    const io = bodies.find((b) => b.alive && b.volcanicIo);
+    const jVis = jup ? bodyRenderer.getVisual(jup.id) : undefined;
+    const ioVis = io ? bodyRenderer.getVisual(io.id) : undefined;
+
+    if (!jup || !io || !jVis || !ioVis) {
+      if (this.jupiterIoVis) {
+        this.scene.remove(this.jupiterIoVis.torusMesh);
+        this.scene.remove(this.jupiterIoVis.torusParticles);
+        this.scene.remove(this.jupiterIoVis.fluxTube);
+        this.scene.remove(this.jupiterIoVis.plumeGroup);
+        (this.jupiterIoVis.torusMesh.material as THREE.Material).dispose();
+        (this.jupiterIoVis.torusParticles.material as THREE.Material).dispose();
+        (this.jupiterIoVis.fluxTube.material as THREE.Material).dispose();
+        for (const m of this.jupiterIoVis.plumeMats) m.dispose();
+        this.jupiterIoVis = null;
+      }
+      return;
+    }
+
+    if (!this.jupiterIoVis) {
+      const torusMesh = new THREE.Mesh(SHARED_IO_TORUS_GEO, createIoTorusMaterial());
+      torusMesh.renderOrder = 2;
+
+      const torusParticles = new THREE.Points(
+        SHARED_IO_TORUS_PARTICLES_GEO,
+        createIoTorusParticlesMaterial()
+      );
+      torusParticles.frustumCulled = false;
+      torusParticles.renderOrder = 3;
+
+      const fluxTube = new THREE.LineSegments(
+        SHARED_IO_FLUX_TUBE_GEO,
+        createIoFluxTubeMaterial()
+      );
+      fluxTube.frustumCulled = false;
+      fluxTube.renderOrder = 4;
+
+      // 3 Ballistic Volcanic Umbrella Plumes anchored at Io's 3 active caldera hotspots (Tvashtar, Pele, Prometheus)!
+      const plumeGroup = new THREE.Group();
+      const plumeMats: THREE.ShaderMaterial[] = [];
+      const ventDirs = [
+        new THREE.Vector3(0.68, 0.58, 0.44).normalize(),
+        new THREE.Vector3(-0.74, -0.26, 0.62).normalize(),
+        new THREE.Vector3(0.18, -0.14, -0.97).normalize(),
+      ];
+      const yAxis = new THREE.Vector3(0, 1, 0);
+      for (let i = 0; i < ventDirs.length; i++) {
+        const mat = createIoPlumeMaterial(11.3 + i * 29.7);
+        const mesh = new THREE.Mesh(SHARED_IO_PLUME_GEO, mat);
+        mesh.quaternion.setFromUnitVectors(yAxis, ventDirs[i]);
+        mesh.scale.setScalar(i === 0 ? 1.15 : i === 1 ? 1.0 : 0.88);
+        mesh.renderOrder = 3;
+        plumeGroup.add(mesh);
+        plumeMats.push(mat);
+      }
+
+      this.scene.add(torusMesh);
+      this.scene.add(torusParticles);
+      this.scene.add(fluxTube);
+      this.scene.add(plumeGroup);
+      this.jupiterIoVis = { torusMesh, torusParticles, fluxTube, plumeGroup, plumeMats };
+    }
+
+    const vis = this.jupiterIoVis;
+    // Live vector from Jupiter to Io
+    this.tempDir.subVectors(ioVis.renderedPos, jVis.renderedPos);
+    const orbitR = Math.max(jVis.renderedRadius * 2.2, this.tempDir.length());
+    this.tempDir.normalize();
+
+    // 1. Io's 3 Volcanic Umbrella Plumes (always visible, even in Pure Naked-Eye Mode!)
+    vis.plumeGroup.visible = true;
+    vis.plumeGroup.position.copy(ioVis.renderedPos);
+    vis.plumeGroup.rotation.set(0, io.rotationAngle, io.axialTilt);
+    vis.plumeGroup.scale.setScalar(ioVis.renderedRadius);
+    for (const pm of vis.plumeMats) {
+      pm.uniforms.uTime.value = elapsedTime;
+    }
+
+    // 2. Io Plasma Torus & 3D Dipole Magnetic Flux Tube (toggled via Space Weather Scientific Overlay!)
+    vis.torusMesh.visible = showSpaceWeatherField;
+    vis.torusParticles.visible = showSpaceWeatherField;
+    vis.fluxTube.visible = showSpaceWeatherField;
+
+    if (showSpaceWeatherField) {
+      // Align Torus plane with Jupiter's tilted equatorial plane (TorusGeometry native plane is XY -> rotate X by -PI/2)
+      vis.torusMesh.position.copy(jVis.renderedPos);
+      vis.torusMesh.rotation.set(-Math.PI / 2, 0, jup.axialTilt);
+      vis.torusMesh.scale.setScalar(orbitR);
+
+      vis.torusParticles.position.copy(jVis.renderedPos);
+      vis.torusParticles.rotation.set(-Math.PI / 2, 0, jup.axialTilt);
+      vis.torusParticles.scale.setScalar(orbitR);
+
+      const ioAngle = Math.atan2(-this.tempDir.z, this.tempDir.x);
+      const tMat = vis.torusMesh.material as THREE.ShaderMaterial;
+      tMat.uniforms.uTime.value = elapsedTime;
+      tMat.uniforms.uIoAngle.value = ioAngle;
+
+      const tpMat = vis.torusParticles.material as THREE.ShaderMaterial;
+      tpMat.uniforms.uTime.value = elapsedTime;
+      tpMat.uniforms.uIoAngle.value = ioAngle;
+
+      // Orient 3D Dipole Magnetic Flux Tube: +X = Jupiter->Io, +Y = Jupiter's North magnetic pole!
+      this.tempUp.set(0, 1, 0).applyEuler(jVis.tiltGroup.rotation).normalize();
+      this.tempAxis.crossVectors(this.tempDir, this.tempUp);
+      if (this.tempAxis.lengthSq() < 1e-4) {
+        this.tempAxis.set(0, 0, 1);
+      } else {
+        this.tempAxis.normalize();
+      }
+      this.tempUp.crossVectors(this.tempAxis, this.tempDir).normalize();
+      this.tempBasisMat.makeBasis(this.tempDir, this.tempUp, this.tempAxis);
+
+      vis.fluxTube.position.copy(jVis.renderedPos);
+      vis.fluxTube.quaternion.setFromRotationMatrix(this.tempBasisMat);
+      vis.fluxTube.scale.setScalar(orbitR);
+
+      const fMat = vis.fluxTube.material as THREE.ShaderMaterial;
+      fMat.uniforms.uTime.value = elapsedTime;
+      fMat.uniforms.uJupRatio.value = THREE.MathUtils.clamp(jVis.renderedRadius / orbitR, 0.12, 0.65);
+    }
+  }
+
   public disposeAll(): void {
     for (const vis of this.cmeMap.values()) {
       this.scene.remove(vis.group);
@@ -1416,5 +1919,16 @@ export class HighEnergyRenderer {
       (vis.southJet.material as THREE.Material).dispose();
     }
     this.blazarMap.clear();
+    if (this.jupiterIoVis) {
+      this.scene.remove(this.jupiterIoVis.torusMesh);
+      this.scene.remove(this.jupiterIoVis.torusParticles);
+      this.scene.remove(this.jupiterIoVis.fluxTube);
+      this.scene.remove(this.jupiterIoVis.plumeGroup);
+      (this.jupiterIoVis.torusMesh.material as THREE.Material).dispose();
+      (this.jupiterIoVis.torusParticles.material as THREE.Material).dispose();
+      (this.jupiterIoVis.fluxTube.material as THREE.Material).dispose();
+      for (const m of this.jupiterIoVis.plumeMats) m.dispose();
+      this.jupiterIoVis = null;
+    }
   }
 }

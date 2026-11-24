@@ -1488,6 +1488,201 @@ function createRocheTypeIaBinary(): CelestialBody[] {
   return centerMomentum([redGiant, whiteDwarf]);
 }
 
+function createJupiterIoTorus(): CelestialBody[] {
+  const sun: CelestialBody = {
+    id: nextBodyId('sun'),
+    name: '太阳',
+    category: 'star',
+    mass: M_SUN,
+    radius: R_SUN,
+    position: { x: 0, y: 0, z: 0 },
+    velocity: { x: 0, y: 0, z: 0 },
+    acceleration: { x: 0, y: 0, z: 0 },
+    temperature: 5778,
+    luminosity: L_SUN,
+    albedo: 0,
+    greenhouse: 0,
+    waterFraction: 0,
+    atmosphereDensity: 0,
+    impactHeat: 0,
+    rotationPeriod: 25.4 * DAY,
+    rotationAngle: 0,
+    axialTilt: 0.12,
+    color: '#fff1c1',
+    secondaryColor: '#ff8a1f',
+    atmosphereColor: '#ffaa44',
+    seed: 101,
+    trail: [{ x: 0, y: 0, z: 0 }],
+    alive: true,
+  };
+
+  // Jupiter orbiting at 5.2 AU at a dramatic oblique sunlight phase so UV polar aurora & Io plumes shine!
+  const jupiter = makeOrbitingBody(
+    {
+      name: '木星',
+      category: 'gas_giant',
+      mass: M_JUPITER,
+      radius: R_JUPITER,
+      temperature: 165,
+      luminosity: 0,
+      albedo: 0.52,
+      greenhouse: 0.25,
+      waterFraction: 0,
+      atmosphereDensity: 1.8,
+      impactHeat: 0,
+      auroraIntensity: 1.25,
+      jupiterTorus: true,
+      rotationPeriod: 9.93 * HOUR,
+      axialTilt: 0.055,
+      color: '#d8b48a',
+      secondaryColor: '#a66b46',
+      atmosphereColor: '#66a8ff',
+    },
+    sun,
+    { semiMajorAU: 5.2, eccentricity: 0.01, inclinationDeg: 0, phaseDeg: 142 }
+  );
+
+  // 1:2:4 Laplace-resonant Galilean trio squeezing Io via tidal heating!
+  const io = makeOrbitingBody(
+    {
+      name: '木卫一 (Io)',
+      category: 'moon',
+      mass: 1.21 * M_MOON,
+      radius: 1.05 * R_MOON,
+      temperature: 130,
+      luminosity: 0,
+      albedo: 0.63,
+      greenhouse: 0,
+      waterFraction: 0,
+      atmosphereDensity: 0.02,
+      impactHeat: 0.35,
+      volcanicIo: true,
+      rotationPeriod: 1.77 * DAY,
+      axialTilt: 0.01,
+      color: '#e8c448',
+      secondaryColor: '#c44b14',
+      atmosphereColor: '#ffaa44',
+      parentId: jupiter.id,
+    },
+    jupiter,
+    { semiMajorAU: 0.021, eccentricity: 0.004, inclinationDeg: 0.2, phaseDeg: 32 }
+  );
+
+  const europa = makeOrbitingBody(
+    {
+      name: '木卫二 (欧罗巴)',
+      category: 'moon',
+      mass: 0.65 * M_MOON,
+      radius: 0.90 * R_MOON,
+      temperature: 102,
+      luminosity: 0,
+      albedo: 0.67,
+      greenhouse: 0,
+      waterFraction: 0.4,
+      atmosphereDensity: 0,
+      impactHeat: 0,
+      rotationPeriod: 3.55 * DAY,
+      axialTilt: 0.01,
+      color: '#d8e4f0',
+      secondaryColor: '#8ea2b8',
+      atmosphereColor: '#000000',
+      parentId: jupiter.id,
+    },
+    jupiter,
+    { semiMajorAU: 0.034, eccentricity: 0.009, inclinationDeg: 0.5, phaseDeg: 148 }
+  );
+
+  const ganymede = makeOrbitingBody(
+    {
+      name: '木卫三 (盖尼米德)',
+      category: 'moon',
+      mass: 2.02 * M_MOON,
+      radius: 1.52 * R_MOON,
+      temperature: 110,
+      luminosity: 0,
+      albedo: 0.43,
+      greenhouse: 0,
+      waterFraction: 0.1,
+      atmosphereDensity: 0,
+      impactHeat: 0,
+      rotationPeriod: 7.15 * DAY,
+      axialTilt: 0.01,
+      color: '#b4aa9c',
+      secondaryColor: '#6f665a',
+      atmosphereColor: '#000000',
+      parentId: jupiter.id,
+    },
+    jupiter,
+    { semiMajorAU: 0.054, eccentricity: 0.002, inclinationDeg: 0.3, phaseDeg: 256 }
+  );
+
+  return centerMomentum([sun, jupiter, io, europa, ganymede]);
+}
+
+function createEinsteinRingLensing(): CelestialBody[] {
+  const lensMass = 1.0e12 * M_SUN;
+  const foregroundLens: CelestialBody = {
+    id: nextBodyId('lens'),
+    name: '前景引力透镜星系团',
+    category: 'black_hole',
+    mass: lensMass,
+    radius: 0.15 * R_SUN,
+    position: { x: 0, y: 0, z: 0 },
+    velocity: { x: 0, y: 0, z: 0 },
+    acceleration: { x: 0, y: 0, z: 0 },
+    temperature: 4800,
+    luminosity: 0,
+    albedo: 0,
+    greenhouse: 0,
+    waterFraction: 0,
+    atmosphereDensity: 0,
+    impactHeat: 0,
+    isGravitationalLens: true,
+    lensShear: 0.0,
+    rotationPeriod: 1000 * DAY,
+    rotationAngle: 0,
+    axialTilt: 0,
+    color: '#ffe2ad',
+    secondaryColor: '#ffaa55',
+    atmosphereColor: '#77aaff',
+    seed: 901,
+    trail: [{ x: 0, y: 0, z: 0 }],
+    alive: true,
+  };
+
+  // Cosmological background grand-design spiral galaxy + active quasar aligned cleanly behind the lens!
+  // Gentle transverse cosmological drift slowly glides through exact beta = 0 Einstein Ring symmetry.
+  const backgroundSource: CelestialBody = {
+    id: nextBodyId('src'),
+    name: '遥远背景旋涡星系 (z≈3.2)',
+    category: 'rocky',
+    mass: 1e20,
+    radius: 0.1 * R_EARTH,
+    position: { x: -1.6 * AU, y: 0.35 * AU, z: -160 * AU },
+    velocity: { x: 9.5e5, y: -1.8e5, z: 0 },
+    acceleration: { x: 0, y: 0, z: 0 },
+    temperature: 300,
+    luminosity: 0,
+    albedo: 0.5,
+    greenhouse: 0,
+    waterFraction: 0,
+    atmosphereDensity: 0,
+    impactHeat: 0,
+    isLensSource: true,
+    rotationPeriod: 100 * DAY,
+    rotationAngle: 0,
+    axialTilt: 0,
+    color: '#72b8ff',
+    secondaryColor: '#ff70b8',
+    atmosphereColor: '#000000',
+    seed: 902,
+    trail: [],
+    alive: true,
+  };
+
+  return [foregroundLens, backgroundSource];
+}
+
 function createEmptySandbox(): CelestialBody[] {
   return [];
 }
@@ -1501,6 +1696,26 @@ export const SCENARIOS: ScenarioDefinition[] = [
     defaultCameraDistanceAU: 3.4,
     defaultFocusBodyName: '太阳',
     createBodies: createSolarSystem,
+  },
+  {
+    id: 'jupiter_io_torus',
+    name: '🌋 木星—木卫一火山与等离子体环',
+    description: 'NASA 朱诺号实测级木星电磁奇观：木卫一在 1:2:4 潮汐共振下喷发伞状硫磺火山羽流，滋养发光等离子体环，并通过 40 万伏磁通量管直连木星南北极点亮电光蓝极光足点与拖尾！',
+    defaultTimeScale: 1.6 * DAY,
+    defaultCameraDistanceAU: 0.068,
+    defaultFocusBodyName: '木星',
+    defaultCameraAngles: { azimuthDeg: 22, elevationDeg: 26 },
+    createBodies: createJupiterIoTorus,
+  },
+  {
+    id: 'einstein_ring_lensing',
+    name: '⏳ 引力透镜：爱因斯坦环与十字',
+    description: 'JWST / 哈勃实拍级广义相对论强引力透镜：自由拖拽视角或调节透镜椭率与质量，实时把遥远背景星系弯折成完美 360° 爱因斯坦环、四重爱因斯坦十字与漫天星系团弧！',
+    defaultTimeScale: 0.8 * DAY,
+    defaultCameraDistanceAU: 0.92,
+    defaultFocusBodyName: '前景引力透镜星系团',
+    defaultCameraAngles: { azimuthDeg: 0, elevationDeg: 0 },
+    createBodies: createEinsteinRingLensing,
   },
   {
     id: 'earth_aurora',

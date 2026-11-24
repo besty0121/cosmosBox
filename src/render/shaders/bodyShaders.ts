@@ -2022,3 +2022,406 @@ export function createEarthAuroraMaterial(body: CelestialBody): THREE.ShaderMate
     side: THREE.FrontSide,
   });
 }
+
+// ============================================================================
+// 8. NASA JUNOCAM / GALILEO VOLCANIC IO SURFACE SHADER (Sulfur Frost + Lava Calderas)
+// ============================================================================
+
+export function createIoSurfaceMaterial(
+  body: CelestialBody,
+  textures: PlanetTextures
+): THREE.ShaderMaterial {
+  const starPositions = Array.from({ length: MAX_STAR_LIGHTS }, () => new THREE.Vector3(0, 0, 0));
+  const starColors = Array.from({ length: MAX_STAR_LIGHTS }, () => new THREE.Color(0xffffff));
+  const starRadii = new Array(MAX_STAR_LIGHTS).fill(5.0);
+  const occluderPositions = Array.from({ length: MAX_OCCLUDERS }, () => new THREE.Vector3(0, 0, 0));
+  const occluderRadii = new Array(MAX_OCCLUDERS).fill(0);
+  const occluderHasAtmo = new Array(MAX_OCCLUDERS).fill(0);
+
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uSeed: { value: body.seed },
+      uAlbedoMap: { value: textures.moon },
+      uStarCount: { value: 0 },
+      uStarPositions: { value: starPositions },
+      uStarColors: { value: starColors },
+      uStarRadii: { value: starRadii },
+      uOccluderCount: { value: 0 },
+      uOccluderPositions: { value: occluderPositions },
+      uOccluderRadii: { value: occluderRadii },
+      uOccluderHasAtmo: { value: occluderHasAtmo },
+    },
+    vertexShader: TEXTURED_SPHERE_VERTEX,
+    fragmentShader: /* glsl */ `
+      uniform float uTime;
+      uniform float uSeed;
+      uniform sampler2D uAlbedoMap;
+      uniform int uStarCount;
+      uniform vec3 uStarPositions[${MAX_STAR_LIGHTS}];
+      uniform vec3 uStarColors[${MAX_STAR_LIGHTS}];
+
+      varying vec2 vUv;
+      varying vec3 vNormalWorld;
+      varying vec3 vWorldPos;
+      varying vec3 vLocalPos;
+      ${GLSL_ECLIPSE_HELPER}
+      ${GLSL_COMET_NOISE}
+
+      void main() {
+        vec3 N = normalize(vNormalWorld);
+        vec3 p = normalize(vLocalPos);
+        float texBase = dot(texture2D(uAlbedoMap, vUv).rgb, vec3(0.3, 0.59, 0.11));
+
+        // Authentic NASA JunoCam / Galileo mottled sulfur-yellow, SO2 frost white, volcanic orange-rust & dark silicate paterae!
+        float n1 = cFbm2(vec2(atan(p.z, p.x) * 2.2 + uSeed * 0.1, p.y * 4.5));
+        float n2 = cFbm2(vec2(atan(p.z, p.x) * 5.4 - p.y * 3.0, p.y * 9.5 + uSeed * 0.3));
+        float n3 = cFbm2(p.xz * 7.5 + vec2(p.y * 5.2, uSeed * 0.2));
+
+        vec3 sulfurYellow = vec3(0.88, 0.78, 0.34);
+        vec3 so2Frost = vec3(0.92, 0.89, 0.74);
+        vec3 volcanicRust = vec3(0.76, 0.34, 0.11);
+        vec3 darkSilicate = vec3(0.22, 0.15, 0.09);
+
+        vec3 albedo = mix(sulfurYellow, so2Frost, smoothstep(0.56, 0.82, n1 * 0.7 + texBase * 0.4));
+        albedo = mix(albedo, volcanicRust, smoothstep(0.45, 0.78, n2) * 0.78);
+        // Dark volcanic patera rings (like Pele's crimson-orange sulfur fallout ring!)
+        float calderaSpot = smoothstep(0.72, 0.86, n3 * 0.75 + (1.0 - texBase) * 0.35);
+        albedo = mix(albedo, darkSilicate, calderaSpot * 0.88);
+
+        // 3 Primary active volcanic vent coordinates matching Io's umbrella plumes (Tvashtar, Pele, Prometheus)
+        vec3 v1 = normalize(vec3(0.68, 0.58, 0.44));
+        vec3 v2 = normalize(vec3(-0.74, -0.26, 0.62));
+        vec3 v3 = normalize(vec3(0.18, -0.14, -0.97));
+        float d1 = distance(p, v1);
+        float d2 = distance(p, v2);
+        float d3 = distance(p, v3);
+
+        // Red-orange sulfur pyroclastic rings around Pele & Tvashtar
+        float peleRing = exp(-pow((d2 - 0.22) / 0.08, 2.0)) * 0.55 + exp(-pow((d1 - 0.19) / 0.07, 2.0)) * 0.45;
+        albedo = mix(albedo, vec3(0.84, 0.22, 0.06), clamp(peleRing, 0.0, 0.65));
+
+        // Incandescent molten-lava caldera hotspots gleaming vividly even on Io's nightside!
+        float pulse = 0.85 + 0.15 * sin(uTime * 3.4 + n2 * 8.0);
+        float ventGlow =
+          exp(-d1 * d1 * 180.0) * 1.45 +
+          exp(-d2 * d2 * 165.0) * 1.35 +
+          exp(-d3 * d3 * 195.0) * 1.25 +
+          smoothstep(0.82, 0.94, n3 * 0.8 + (1.0 - texBase) * 0.28) * 0.55;
+
+        // Multi-star illumination + subtle Jupiter-shine ambient so nightside calderas contrast cleanly
+        vec3 direct = vec3(0.0);
+        for (int i = 0; i < ${MAX_STAR_LIGHTS}; i++) {
+          if (i >= uStarCount) break;
+          vec3 L = normalize(uStarPositions[i] - vWorldPos);
+          float ndl = max(dot(N, L), 0.0);
+          vec3 eclipse = computeEclipseTransmit(vWorldPos, uStarPositions[i], uStarRadii[i]);
+          direct += uStarColors[i] * pow(ndl, 0.88) * eclipse * 1.18;
+        }
+        vec3 ambient = uStarCount > 0 ? vec3(0.055, 0.05, 0.042) : vec3(0.45);
+        vec3 lavaCol = mix(vec3(1.55, 0.34, 0.04), vec3(2.0, 1.45, 0.55), clamp(ventGlow * 0.6, 0.0, 1.0));
+        vec3 finalCol = albedo * (direct + ambient) + lavaCol * ventGlow * pulse;
+
+        gl_FragColor = vec4(finalCol, 1.0);
+      }
+    `,
+  });
+}
+
+// ============================================================================
+// 9. NASA HUBBLE UV / JUNO JUPITER POLAR AURORA + LIVE IO FOOTPRINT & TAIL SHADER
+// ============================================================================
+
+export function createJupiterAuroraMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uIntensity: { value: 1.15 },
+      uIoDirLocal: { value: new THREE.Vector3(1, 0, 0) },
+      uHasIo: { value: 1.0 },
+    },
+    vertexShader: /* glsl */ `
+      varying vec3 vLocalPos;
+      varying vec3 vNormalWorld;
+      varying vec3 vWorldPos;
+      void main() {
+        vLocalPos = normalize(position);
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorldPos = wp.xyz;
+        vNormalWorld = normalize(mat3(modelMatrix) * normal);
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform float uTime;
+      uniform float uIntensity;
+      uniform vec3 uIoDirLocal;
+      uniform float uHasIo;
+
+      varying vec3 vLocalPos;
+      varying vec3 vNormalWorld;
+      varying vec3 vWorldPos;
+      ${GLSL_COMET_NOISE}
+
+      void main() {
+        vec3 p = normalize(vLocalPos);
+        // Jupiter's real magnetic dipole is tilted ~9.6° from its spin axis!
+        float tilt = 0.168;
+        float ct = cos(tilt);
+        float st = sin(tilt);
+        vec3 magP = vec3(p.x * ct - p.y * st, p.x * st + p.y * ct, p.z);
+
+        float absLat = abs(magP.y); // sin(magnetic latitude)
+        if (absLat < 0.72) discard;
+
+        float hemi = magP.y >= 0.0 ? 1.0 : -1.0;
+        float az = atan(magP.z, magP.x);
+
+        // 1. Main Jovian UV Auroral Oval (~72°–78° magnetic latitude, curl-warped electric cobalt-blue & UV violet!)
+        vec2 polarXY = magP.xz * 4.2;
+        vec2 w = vec2(
+          cFbm2(polarXY + vec2(uTime * 0.12, -uTime * 0.09 + hemi * 2.1)),
+          cFbm2(polarXY + vec2(-uTime * 0.10 + 4.3, uTime * 0.13))
+        );
+        float f1 = cFbm2(polarXY * 1.45 + w * 1.65 - vec2(uTime * 0.18, 0.0));
+        float f2 = cFbm2(polarXY * 3.1 + w * 0.9 + vec2(0.0, uTime * 0.24));
+
+        // Subtle asymmetric oval center matching Hubble UV Jupiter aurora
+        float ovalTarget = 0.942 + 0.016 * sin(az + 0.6 * hemi) + (w.x - 0.5) * 0.022;
+        float ovalDist = abs(absLat - ovalTarget);
+        float mainOval = exp(-pow(ovalDist / 0.024, 2.0)) * (0.45 + 0.95 * pow(1.0 - abs(f1 * 2.0 - 1.0), 1.8));
+        float polarSwirl = smoothstep(0.955, 0.992, absLat) * smoothstep(0.38, 0.85, f2) * 0.38;
+
+        // 2. LIVE TRACKED IO AURORAL FOOTPRINT + SECONDARY SUB-SPOT + TRAILING COMET TAIL!
+        //    Locked dead-center onto the incoming 3D Magnetic Flux Tube at 67° N/S latitude (sin(67°) ≈ 0.920)!
+        float ioFootprint = 0.0;
+        float ioTail = 0.0;
+        if (uHasIo > 0.5) {
+          float spinAz = atan(p.z, p.x);
+          float ioAz = atan(uIoDirLocal.z, uIoDirLocal.x);
+          float dAz = atan(sin(spinAz - ioAz), cos(spinAz - ioAz));
+          float spinAbsLat = abs(p.y);
+          float footLat = 0.920; // exact 67° N/S magnetic footprint landing latitude!
+          float dLat = spinAbsLat - footLat;
+
+          // Primary Alfvén main footprint spot + trailing secondary sub-spot (Juno JIRAM double-spot!)
+          float mainSpot = exp(-(dAz * dAz * 78.0 + dLat * dLat * 3200.0)) * 2.15;
+          float subSpot = exp(-((dAz + 0.14) * (dAz + 0.14) * 105.0 + dLat * dLat * 3600.0)) * 1.05;
+          ioFootprint = mainSpot + subSpot;
+
+          // Long fading trailing auroral tail sweeping ~55° behind Io's orbital azimuth!
+          float tailLag = mod(ioAz - spinAz + 6.2831853, 6.2831853);
+          float tailAlong = smoothstep(0.0, 0.07, tailLag) * exp(-tailLag * 2.35) * smoothstep(1.35, 0.50, tailLag);
+          float tailWidth = exp(-pow(dLat / (0.012 + 0.008 * tailLag), 2.0));
+          ioTail = tailAlong * tailWidth * (0.68 + 0.55 * f2) * 1.25;
+        }
+
+        vec3 N = normalize(vNormalWorld);
+        vec3 V = normalize(cameraPosition - vWorldPos);
+        // Subtle limb brightening like real translucent upper-atmosphere H2 UV emission!
+        float limbBoost = 0.72 + 0.58 * pow(1.0 - abs(dot(N, V)), 1.6);
+
+        vec3 uvCobalt = vec3(0.24, 0.68, 1.95);
+        vec3 uvViolet = vec3(0.58, 0.28, 1.98);
+        vec3 footprintCyanWhite = vec3(0.75, 1.48, 2.20);
+
+        vec3 ovalCol = mix(uvCobalt, uvViolet, smoothstep(0.25, 0.85, f2) * 0.55);
+        vec3 col = ovalCol * (mainOval + polarSwirl) + footprintCyanWhite * (ioFootprint + ioTail * 0.85);
+        float alpha = clamp(((mainOval + polarSwirl) * 0.72 + ioFootprint * 0.95 + ioTail * 0.72) * limbBoost * uIntensity, 0.0, 0.95);
+        if (alpha < 0.006) discard;
+
+        gl_FragColor = vec4(col * limbBoost, alpha);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.FrontSide,
+  });
+}
+
+// ============================================================================
+// 10. JWST / HUBBLE EXACT GENERAL RELATIVITY GRAVITATIONAL LENSING SHADER
+//     (Real-time Einstein Ring, 4-Image Einstein Cross & SMACS 0723 Galaxy Arcs!)
+// ============================================================================
+
+export function createGravitationalLensMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uLensCenter: { value: new THREE.Vector3(0, 0, 0) },
+      uSourceDirWorld: { value: new THREE.Vector3(0, 0, -1) },
+      uEinsteinRadius: { value: 0.24 },
+      uLensShear: { value: 0.0 },
+      uMaxAngle: { value: 0.68 },
+    },
+    vertexShader: /* glsl */ `
+      varying vec3 vWorldPos;
+      void main() {
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorldPos = wp.xyz;
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform float uTime;
+      uniform vec3 uLensCenter;
+      uniform vec3 uSourceDirWorld;
+      uniform float uEinsteinRadius;
+      uniform float uLensShear;
+      uniform float uMaxAngle;
+
+      varying vec3 vWorldPos;
+      ${GLSL_COMET_NOISE}
+
+      // Evaluates a crisp JWST-grade spiral galaxy + compact active quasar nucleus in the deflected source plane!
+      vec3 evalPrimarySourceGalaxy(vec2 d, float shear) {
+        float r = length(d);
+        if (r > 0.24) return vec3(0.0);
+
+        // Smooth transition between extended Spiral-Galaxy Einstein Ring (shear ~ 0)
+        // and compact 4-Image Quasar Einstein Cross (shear ~ 0.24 -> 4 cleanly separated diamond quasar points!)
+        float crossMode = smoothstep(0.06, 0.21, shear);
+
+        // Tilt the background spiral slightly for realistic JWST SPT0418-47 morphology
+        vec2 tiltD = vec2(d.x * 1.18 + d.y * 0.28, -d.x * 0.24 + d.y * 0.88);
+        float rt = length(tiltD);
+        float ang = atan(tiltD.y, tiltD.x);
+
+        // Grand-design twin logarithmic spiral arms + sparkling H-II star-forming knots!
+        float logR = log(max(rt, 0.0022));
+        float armPhase = 2.0 * ang - logR * 5.2;
+        float arms = pow(0.5 + 0.5 * cos(armPhase), 2.6);
+        float fineClumps = cFbm2(tiltD * 58.0 + vec2(3.1, 7.4));
+        float knots = smoothstep(0.46, 0.88, fineClumps) * arms;
+
+        float diskEnv = exp(-rt * 24.0) * mix(1.0, 0.09, crossMode);
+        float bulge = exp(-rt * rt * 1550.0) * mix(0.68, 0.14, crossMode);
+
+        // Compact diamond-sharp blue-white quasar core (splits into 4 crisp separated Cross images at shear = 0.24!)
+        float qSharp = mix(3200.0, 8200.0, crossMode);
+        float quasarCore = exp(-r * r * qSharp) * mix(0.42, 3.6, crossMode);
+        float quasarHalo = exp(-r * 68.0) * mix(0.12, 0.65, crossMode);
+
+        vec3 bulgeGold = vec3(1.42, 0.94, 0.42);
+        vec3 armBlue = vec3(0.32, 0.72, 1.55);
+        vec3 h2Rose = vec3(1.45, 0.36, 0.72);
+        vec3 dustAmber = vec3(1.28, 0.62, 0.22);
+        vec3 quasarCyanWhite = vec3(0.95, 1.48, 2.20);
+
+        vec3 diskCol = mix(armBlue, h2Rose, smoothstep(0.48, 0.86, fineClumps) * 0.62);
+        diskCol = mix(diskCol, dustAmber, smoothstep(0.06, 0.012, rt) * 0.48);
+        vec3 col = diskCol * diskEnv * (0.28 + 1.05 * arms + 1.45 * knots);
+        col += bulgeGold * bulge;
+        col += quasarCyanWhite * (quasarCore + quasarHalo);
+        return col;
+      }
+
+      // Evaluates a distant JWST SMACS 0723 cluster background galaxy (elliptical / dusty starburst / blue disk)
+      vec3 evalDeepFieldGalaxy(vec2 d, vec2 axis, float size, vec3 tint, float isSpiral) {
+        vec2 rotD = vec2(dot(d, axis), dot(d, vec2(-axis.y, axis.x)));
+        rotD.y *= 1.85; // inclined galaxy disc aspect ratio
+        float r = length(rotD) / size;
+        if (r > 3.8) return vec3(0.0);
+        float core = exp(-r * r * 4.8) * 1.25;
+        float halo = exp(-r * 1.95) * 0.78;
+        float clump = isSpiral > 0.5 ? (0.65 + 0.55 * sin(atan(rotD.y, rotD.x) * 2.0 - r * 3.5)) : 1.0;
+        return tint * (core + halo * clump);
+      }
+
+      void main() {
+        vec3 toLens = uLensCenter - cameraPosition;
+        float distL = max(0.01, length(toLens));
+        vec3 fwd = toLens / distL;
+        vec3 worldUp = abs(fwd.y) < 0.92 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+        vec3 right = normalize(cross(worldUp, fwd));
+        vec3 up = normalize(cross(fwd, right));
+
+        vec3 rd = normalize(vWorldPos - cameraPosition);
+        float zProj = dot(rd, fwd);
+        if (zProj <= 0.05) discard;
+        vec2 theta = vec2(dot(rd, right), dot(rd, up)) / zProj;
+        float rTheta = length(theta);
+
+        // Seamless outer fade well inside the bounding sphere -> ZERO visible box/sphere edges!
+        float sphereMask = smoothstep(uMaxAngle * 0.96, uMaxAngle * 0.54, rTheta);
+        if (sphereMask < 0.004) discard;
+
+        // Exact General Relativity Thin-Lens Equation + Elliptical Quadrupole Shear:
+        //   beta = theta - (theta_E^2 / (|theta|^2 + r_core^2)) * theta - gamma * (theta_x, -theta_y)
+        //   gamma = 0.00 -> Axisymmetric 360° JWST Einstein Ring!
+        //   gamma ~ 0.24 -> Exact 4-Image Hubble Einstein Cross!
+        float te = uEinsteinRadius;
+        float r2 = dot(theta, theta);
+        vec2 alphaPoint = (te * te / (r2 + te * te * 0.014)) * theta;
+        vec2 alphaShear = uLensShear * vec2(theta.x, -theta.y);
+        vec2 beta = theta - alphaPoint - alphaShear;
+
+        // Project live 3D primary background galaxy direction onto source plane so orbiting smoothly morphs the ring!
+        vec3 srcDir = normalize(uSourceDirWorld);
+        float srcForward = dot(srcDir, fwd);
+        vec3 lensedCol = vec3(0.0);
+
+        if (srcForward > 0.25) {
+          vec2 betaSrc = vec2(dot(srcDir, right), dot(srcDir, up)) / srcForward;
+          lensedCol += evalPrimarySourceGalaxy(beta - betaSrc, uLensShear);
+
+          // 8 Authentic JWST SMACS 0723 Deep-Field Galaxies anchored in 3D space behind the lens ->
+          // automatically stretch into sweeping multi-colored concentric tangential giant arcs & arclets!
+          vec3 srcRight = normalize(cross(abs(srcDir.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), srcDir));
+          vec3 srcUp = normalize(cross(srcDir, srcRight));
+
+          for (int i = 0; i < 8; i++) {
+            float fi = float(i);
+            float angG = fi * 0.7854 + 0.28;
+            // Spread background cluster galaxies across inner-arc and wider SMACS 0723 outer-arc zones!
+            float radG = te * (0.48 + 0.92 * mod(fi * 1.618, 1.0));
+            vec3 gDir = normalize(srcDir + srcRight * (cos(angG) * radG) + srcUp * (sin(angG) * radG));
+            float gFwd = dot(gDir, fwd);
+            if (gFwd <= 0.2) continue;
+            vec2 betaG = vec2(dot(gDir, right), dot(gDir, up)) / gFwd;
+
+            // Varied realistic JWST galaxy colors: high-z dusty crimson, amber elliptical, star-forming blue spiral
+            vec3 gTint = i == 0 || i == 4
+              ? vec3(1.65, 0.50, 0.22)
+              : (i == 1 || i == 5
+                ? vec3(0.45, 0.88, 1.75)
+                : (i == 2 || i == 6
+                  ? vec3(1.55, 1.08, 0.55)
+                  : vec3(1.42, 0.52, 0.96)));
+            vec2 gAxis = vec2(cos(fi * 2.1), sin(fi * 2.1));
+            float gSize = 0.026 + 0.014 * mod(fi * 0.73, 1.0);
+            lensedCol += evalDeepFieldGalaxy(beta - betaG, gAxis, gSize, gTint, mod(fi, 2.0)) * 1.28;
+          }
+        }
+
+        // Foreground Giant Elliptical cD Lensing Galaxy (warm golden-ivory de Vaucouleurs brightness profile!)
+        // Elliptically slightly elongated along X when uLensShear > 0 to match the physical quadrupole potential!
+        vec2 fgP = vec2(theta.x / (1.0 + uLensShear * 0.85), theta.y * (1.0 + uLensShear * 0.85));
+        float fgR = length(fgP) / max(0.02, te * 0.28);
+        float fgCore = exp(-pow(fgR, 0.78) * 1.75) * 1.05;
+        float fgHalo = exp(-fgR * 0.95) * 0.24;
+        vec3 fgCol = mix(vec3(1.38, 0.96, 0.56), vec3(1.88, 1.72, 1.44), clamp(fgCore, 0.0, 1.0)) * (fgCore + fgHalo);
+
+        // Subtle dark-matter halo whisper glow near Einstein ring for deep-space cluster depth
+        float dmWhisper = exp(-pow(rTheta / (te * 1.15), 2.0)) * 0.04;
+        vec3 dmCol = vec3(0.26, 0.36, 0.68) * dmWhisper;
+
+        vec3 totalCol = (lensedCol + fgCol + dmCol) * sphereMask;
+        // Filmic Reinhard highlight compression preserves rich blue/amber/rose JWST ring colors without whiteout!
+        totalCol = totalCol / (1.0 + totalCol * 0.58);
+
+        float lum = max(totalCol.r, max(totalCol.g, totalCol.b));
+        float alpha = clamp(lum * 1.15, 0.0, 0.96) * sphereMask;
+        if (alpha < 0.004) discard;
+
+        gl_FragColor = vec4(totalCol, alpha);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    depthTest: true,
+    side: THREE.BackSide,
+  });
+}

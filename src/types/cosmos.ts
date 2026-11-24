@@ -67,6 +67,16 @@ export interface CelestialBody {
   blazarJetPower?: number;
   /** Marks a compact degenerate White Dwarf capable of Roche-lobe accretion -> Type Ia Supernova at 1.44 M_sun */
   isWhiteDwarf?: boolean;
+  /** Marks Jupiter-like magnetosphere host displaying UV polar aurora + Io plasma torus & flux tube */
+  jupiterTorus?: boolean;
+  /** Marks volcanic moon Io emitting ballistic sulfur umbrella plumes & feeding the Io plasma torus */
+  volcanicIo?: boolean;
+  /** Marks a massive foreground galaxy/dark-matter halo acting as a real-time GR gravitational lens */
+  isGravitationalLens?: boolean;
+  /** Elliptical quadrupole shear [0..0.32] (0 = circular Einstein Ring, ~0.24 = 4-image Einstein Cross) */
+  lensShear?: number;
+  /** Marks the primary distant background galaxy/quasar target for interactive gravitational lensing */
+  isLensSource?: boolean;
 
   // Rotation & visual appearance
   /** Sidereal rotation period in seconds */
@@ -231,6 +241,7 @@ export interface ScenarioDefinition {
   defaultTimeScale: number; // sim seconds per real second
   defaultCameraDistanceAU: number;
   defaultFocusBodyName?: string;
+  defaultCameraAngles?: { azimuthDeg: number; elevationDeg: number };
   defaultShowGravityGrid?: boolean;
   autoLaunchCme?: boolean;
   createBodies: () => CelestialBody[];
@@ -282,6 +293,10 @@ export interface BodySnapshot {
   magnetosphereFlash?: number;
   blazarJetPower?: number;
   isWhiteDwarf?: boolean;
+  isGravitationalLens?: boolean;
+  lensShear?: number;
+  jupiterTorus?: boolean;
+  volcanicIo?: boolean;
   rotationPeriod: number;
   axialTiltDeg: number;
   spectralClass: string | null;

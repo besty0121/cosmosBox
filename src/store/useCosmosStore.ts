@@ -135,6 +135,7 @@ interface CosmosState {
       waterFraction: number;
       atmosphereDensity: number;
       auroraIntensity: number;
+      lensShear: number;
       rotationHours: number;
       axialTiltDeg: number;
     }>
@@ -253,7 +254,11 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
       );
     }
 
-    sceneManager.frameScenario(scenario.defaultCameraDistanceAU, scenario.defaultFocusBodyName);
+    sceneManager.frameScenario(
+      scenario.defaultCameraDistanceAU,
+      scenario.defaultFocusBodyName,
+      scenario.defaultCameraAngles
+    );
     sceneManager.setSpawnMode(false, null, get().launchMode);
     const enableGrid = Boolean(scenario.defaultShowGravityGrid);
     sceneManager.showGravityGrid = enableGrid;
@@ -585,6 +590,7 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
     if (patch.waterFraction !== undefined) body.waterFraction = patch.waterFraction;
     if (patch.atmosphereDensity !== undefined) body.atmosphereDensity = patch.atmosphereDensity;
     if (patch.auroraIntensity !== undefined) body.auroraIntensity = patch.auroraIntensity;
+    if (patch.lensShear !== undefined) body.lensShear = patch.lensShear;
     if (patch.rotationHours !== undefined) {
       body.rotationPeriod = Math.max(0.5, patch.rotationHours) * HOUR;
     }
