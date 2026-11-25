@@ -740,6 +740,195 @@ input[type='range'].cosmos-slider::-webkit-slider-thumb {
   border-color: rgba(92, 225, 255, 0.45);
 }
 
+.camera-mode-banner.rec-banner {
+  border-color: rgba(255, 92, 108, 0.72);
+  box-shadow: 0 0 22px rgba(255, 76, 98, 0.24);
+}
+
+/* Keyframe Director & Clean WebM Recording Panel */
+.director-panel {
+  position: absolute;
+  top: 68px;
+  left: 16px;
+  width: 320px;
+  max-height: calc(100vh - 180px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 18;
+}
+
+.director-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-glass);
+}
+
+.director-kf-list {
+  flex: 1 1 auto;
+  min-height: 84px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.kf-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+
+.kf-card.active {
+  background: rgba(92, 225, 255, 0.14);
+  border-color: rgba(92, 225, 255, 0.58);
+}
+
+.kf-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.kf-index {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--accent-cyan);
+  flex-shrink: 0;
+}
+
+.kf-name {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kf-chip {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 99px;
+  background: rgba(92, 225, 255, 0.14);
+  border: 1px solid rgba(92, 225, 255, 0.28);
+  color: #bfefff;
+  flex-shrink: 0;
+}
+
+.kf-card-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.kf-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+
+.kf-num {
+  width: 46px;
+  height: 22px;
+  padding: 0 4px;
+  border-radius: 5px;
+  border: 1px solid var(--border-glass);
+  background: rgba(8, 14, 28, 0.85);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-family: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+  text-align: right;
+  outline: none;
+  user-select: text;
+}
+
+.kf-select {
+  height: 22px;
+  padding: 0 4px;
+  border-radius: 5px;
+  border: 1px solid var(--border-glass);
+  background: rgba(8, 14, 28, 0.85);
+  color: var(--text-primary);
+  font-size: 10.5px;
+  outline: none;
+}
+
+.director-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border-glass);
+  flex-shrink: 0;
+}
+
+.director-btn-rec {
+  flex: 1;
+  justify-content: center;
+  height: 30px;
+  font-weight: 600;
+  background: rgba(255, 76, 98, 0.18);
+  border-color: rgba(255, 92, 108, 0.48);
+  color: #ffd9de;
+}
+
+.director-btn-rec:hover:not(:disabled) {
+  background: rgba(255, 76, 98, 0.32);
+  border-color: rgba(255, 110, 125, 0.82);
+  color: #ffffff;
+}
+
+.director-btn-rec.active {
+  background: rgba(255, 62, 86, 0.36);
+  border-color: #ff6b7c;
+  color: #ffffff;
+  box-shadow: 0 0 16px rgba(255, 76, 98, 0.32);
+}
+
+.rec-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ff4757;
+  box-shadow: 0 0 8px #ff4757;
+  animation: recPulse 1.1s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+.director-last-rec {
+  font-size: 10.5px;
+  color: #8df5c4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@keyframes recPulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.42;
+    transform: scale(0.82);
+  }
+}
+
 /* Slim Scrollbar */
 ::-webkit-scrollbar {
   width: 5px;
@@ -756,6 +945,14 @@ input[type='range'].cosmos-slider::-webkit-slider-thumb {
 @media (max-width: 1640px) {
   .camera-mode-banner {
     top: 116px;
+  }
+  .cosmos-toast {
+    top: 120px;
+  }
+  .director-panel {
+    top: 116px;
+    width: 298px;
+    max-height: calc(100vh - 216px);
   }
 }
 

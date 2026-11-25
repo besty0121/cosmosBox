@@ -7,11 +7,24 @@ class CosmosAudioEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
   private ambientGain: GainNode | null = null;
+  private mediaDest: MediaStreamAudioDestinationNode | null = null;
   private muted = false;
   private started = false;
 
   public isMuted(): boolean {
     return this.muted;
+  }
+
+  /** Returns a persistent Web Audio MediaStream tap for clean video recording, or null if unavailable/muted. */
+  public getMediaStream(): MediaStream | null {
+    if (!this.ctx || !this.masterGain || this.muted || this.ctx.state !== 'running') {
+      return null;
+    }
+    if (!this.mediaDest) {
+      this.mediaDest = this.ctx.createMediaStreamDestination();
+      this.masterGain.connect(this.mediaDest);
+    }
+    return this.mediaDest.stream;
   }
 
   public ensureStarted(): void {

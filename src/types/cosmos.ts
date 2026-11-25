@@ -30,7 +30,7 @@ export type NebulaSpectrumMode = 'hst_optical' | 'jwst_nircam' | 'jwst_miri';
 
 export type LaunchMode = 'orbit' | 'slingshot' | 'stationary';
 
-export type CameraMode = 'orbit' | 'surface' | 'cinematic' | 'flight';
+export type CameraMode = 'orbit' | 'surface' | 'cinematic' | 'flight' | 'director';
 
 export interface CelestialBody {
   id: string;
@@ -335,4 +335,52 @@ export interface BodySnapshot {
   distanceToPrimaryAU: number | null;
   primaryName: string | null;
   color: string;
+}
+
+export type DirectorEasing = 'cinematicSlow' | 'easeInOut' | 'smoothstep' | 'linear';
+
+export type DirectorResolution = 'viewport' | '720p' | '1080p';
+
+export type DirectorFps = 30 | 60;
+
+export interface DirectorKeyframe {
+  id: string;
+  name: string;
+  /** Transition duration from previous keyframe into this keyframe (seconds) */
+  durationSec: number;
+  /** Stationary hold time at this keyframe (seconds) */
+  holdSec: number;
+  easing: DirectorEasing;
+  anchorBodyId: string | null;
+  anchorBodyName: string | null;
+  /** Camera position in scene units relative to anchor / originMeters */
+  position: Vec3;
+  /** Floating origin fallback in SI meters when anchor body is absent or null */
+  originMeters: Vec3;
+  quaternion: [number, number, number, number];
+  fov: number;
+  timeScale: number;
+  nebulaSpectrumMode?: NebulaSpectrumMode;
+  nebulaIrPenetration?: number;
+  galaxySpectrumMode?: GalaxySpectrumMode;
+  galaxyDustOpacity?: number;
+  auroraIntensity?: number;
+  lensShear?: number;
+}
+
+export interface DirectorRecordingResult {
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  durationSec: number;
+  width: number;
+  height: number;
+  fps: number;
+}
+
+export interface DirectorScriptFile {
+  version: 1;
+  scenarioId: string;
+  exportedAt: number;
+  keyframes: DirectorKeyframe[];
 }

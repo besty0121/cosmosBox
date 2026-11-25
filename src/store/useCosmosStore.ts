@@ -12,6 +12,11 @@ import { SimulationEngine } from '../physics/SimulationEngine';
 import { syncStarFromMass } from '../physics/stellar';
 import { stepThermodynamics } from '../physics/thermodynamics';
 import { lenVec3 } from '../physics/vec3';
+import {
+  computeDirectorTotalDuration,
+  parseDirectorScript,
+  serializeDirectorScript,
+} from '../render/DirectorEngine';
 import { GraphicsQuality, SceneManager } from '../render/SceneManager';
 import { SCENARIOS } from '../scenarios/presets';
 import { SPAWN_TEMPLATES } from '../scenarios/templates';
@@ -29,6 +34,10 @@ import {
   CameraMode,
   CmeImpactEvent,
   CollisionEvent,
+  DirectorFps,
+  DirectorKeyframe,
+  DirectorRecordingResult,
+  DirectorResolution,
   GalaxySpectrumMode,
   KilonovaEvent,
   LaunchMode,
@@ -65,6 +74,19 @@ interface CosmosState {
   hudVisible: boolean;
   bodyListOpen: boolean;
   saveModalOpen: boolean;
+  directorOpen: boolean;
+  directorKeyframes: DirectorKeyframe[];
+  directorTimeSec: number;
+  directorTotalSec: number;
+  directorActiveIndex: number;
+  directorPlaying: boolean;
+  directorLoop: boolean;
+  directorResolution: DirectorResolution;
+  directorFps: DirectorFps;
+  directorIncludeAudio: boolean;
+  recordingActive: boolean;
+  recordingElapsedSec: number;
+  lastRecording: DirectorRecordingResult | null;
 
   bodies: BodySnapshot[];
   screenLabels: ScreenLabel[];
@@ -110,6 +132,31 @@ interface CosmosState {
   toggleHud: () => void;
   toggleBodyList: () => void;
   setSaveModalOpen: (open: boolean) => void;
+  toggleDirectorOpen: () => void;
+  setDirectorOpen: (open: boolean) => void;
+
+  // Keyframe Choreography & Clean WebM Recording
+  addDirectorKeyframe: (name?: string) => void;
+  updateDirectorKeyframe: (id: string, patch: Partial<DirectorKeyframe>) => void;
+  recaptureDirectorKeyframe: (id: string) => void;
+  moveDirectorKeyframe: (id: string, delta: -1 | 1) => void;
+  removeDirectorKeyframe: (id: string) => void;
+  clearDirectorKeyframes: () => void;
+  jumpToDirectorKeyframe: (id: string) => void;
+  generateDirectorStoryboard: () => void;
+  playDirectorScript: () => void;
+  toggleDirectorPause: () => void;
+  stopDirectorPlayback: () => void;
+  seekDirectorTime: (timeSec: number) => void;
+  setDirectorLoop: (loop: boolean) => void;
+  setDirectorResolution: (res: DirectorResolution) => void;
+  setDirectorFps: (fps: DirectorFps) => void;
+  setDirectorIncludeAudio: (include: boolean) => void;
+  recordDirectorScript: () => void;
+  toggleFreeRecording: () => void;
+  stopRecording: () => Promise<void>;
+  exportDirectorScriptJson: () => void;
+  importDirectorScriptJson: (text: string) => boolean;
 
   selectBody: (id: string | null) => void;
   focusBody: (id: string | null, zoomCloser?: boolean) => void;
@@ -225,6 +272,19 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
   hudVisible: true,
   bodyListOpen: false,
   saveModalOpen: false,
+  directorOpen: false,
+  directorKeyframes: [],
+  directorTimeSec: 0,
+  directorTotalSec: 0,
+  directorActiveIndex: 0,
+  directorPlaying: false,
+  directorLoop: false,
+  directorResolution: '720p',
+  directorFps: 30,
+  directorIncludeAudio: false,
+  recordingActive: false,
+  recordingElapsedSec: 0,
+  lastRecording: null,
 
   bodies: [],
   screenLabels: [],
@@ -257,6 +317,10 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
     const scenario: ScenarioDefinition =
       SCENARIOS.find((s) => s.id === scenarioId) ?? SCENARIOS[0];
     if (!engine || !sceneManager) return;
+
+    if (sceneManager.isVideoRecording()) {
+      void sceneManager.stopVideoRecording();
+    }
 
     const bodies = scenario.createBodies();
     engine.autoThermo = autoThermo;
@@ -295,6 +359,11 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
       cameraMode: 'orbit',
       cameraTargetName: null,
       spawnActive: false,
+      directorKeyframes: [],
+      directorTimeSec: 0,
+      directorTotalSec: 0,
+      directorActiveIndex: 0,
+      directorPlaying: false,
       selectedBodyId: sceneManager.selectedBodyId,
       focusBodyId: sceneManager.focusBodyId,
       bodies: engine.getBodySnapshots(),
@@ -417,11 +486,323 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
 
   toggleHud: () => set((s) => ({ hudVisible: !s.hudVisible })),
 
-  toggleBodyList: () => set((s) => ({ bodyListOpen: !s.bodyListOpen })),
+  toggleBodyList: () =>
+    set((s) => {
+      const next = !s.bodyListOpen;
+      return { bodyListOpen: next, ...(next ? { directorOpen: false } : {}) };
+    }),
 
   setSaveModalOpen: (open) => {
     if (open) set({ savedUniverses: listLocalSaves() });
     set({ saveModalOpen: open });
+  },
+
+  toggleDirectorOpen: () =>
+    set((s) => {
+      const next = !s.directorOpen;
+      return { directorOpen: next, ...(next ? { bodyListOpen: false } : {}) };
+    }),
+
+  setDirectorOpen: (open) =>
+    set(() => ({
+      directorOpen: open,
+      ...(open ? { bodyListOpen: false } : {}),
+    })),
+
+  addDirectorKeyframe: (name) => {
+    const { sceneManager, directorKeyframes } = get();
+    if (!sceneManager) return;
+    const kf = sceneManager.captureCurrentKeyframe(
+      name ?? `机位 ${directorKeyframes.length + 1}`
+    );
+    const next = [...directorKeyframes, kf];
+    sceneManager.setDirectorKeyframes(next);
+    cosmosAudio.playSpawnPing();
+    set({
+      directorKeyframes: next,
+      directorTotalSec: computeDirectorTotalDuration(next),
+    });
+    get().showToast(`🎬 已记录关键机位 #${next.length}：${kf.name}`);
+  },
+
+  updateDirectorKeyframe: (id, patch) => {
+    const { sceneManager, directorKeyframes } = get();
+    const next = directorKeyframes.map((k) => (k.id === id ? { ...k, ...patch } : k));
+    sceneManager?.setDirectorKeyframes(next);
+    set({
+      directorKeyframes: next,
+      directorTotalSec: computeDirectorTotalDuration(next),
+    });
+  },
+
+  recaptureDirectorKeyframe: (id) => {
+    const { sceneManager, directorKeyframes } = get();
+    if (!sceneManager) return;
+    const target = directorKeyframes.find((k) => k.id === id);
+    if (!target) return;
+    const captured = sceneManager.captureCurrentKeyframe(target.name);
+    const next = directorKeyframes.map((k) =>
+      k.id === id
+        ? {
+            ...captured,
+            id: k.id,
+            name: k.name,
+            durationSec: k.durationSec,
+            holdSec: k.holdSec,
+            easing: k.easing,
+          }
+        : k
+    );
+    sceneManager.setDirectorKeyframes(next);
+    cosmosAudio.playSpawnPing();
+    set({
+      directorKeyframes: next,
+      directorTotalSec: computeDirectorTotalDuration(next),
+    });
+    get().showToast(`🎯 已覆盖更新机位：${target.name}`);
+  },
+
+  moveDirectorKeyframe: (id, delta) => {
+    const { sceneManager, directorKeyframes } = get();
+    const idx = directorKeyframes.findIndex((k) => k.id === id);
+    if (idx < 0) return;
+    const targetIdx = idx + delta;
+    if (targetIdx < 0 || targetIdx >= directorKeyframes.length) return;
+    const next = [...directorKeyframes];
+    const [moved] = next.splice(idx, 1);
+    next.splice(targetIdx, 0, moved);
+    sceneManager?.setDirectorKeyframes(next);
+    set({
+      directorKeyframes: next,
+      directorTotalSec: computeDirectorTotalDuration(next),
+    });
+  },
+
+  removeDirectorKeyframe: (id) => {
+    const { sceneManager, directorKeyframes } = get();
+    const next = directorKeyframes.filter((k) => k.id !== id);
+    sceneManager?.setDirectorKeyframes(next);
+    const total = computeDirectorTotalDuration(next);
+    set((s) => ({
+      directorKeyframes: next,
+      directorTotalSec: total,
+      directorTimeSec: Math.min(s.directorTimeSec, total),
+      directorActiveIndex: Math.min(s.directorActiveIndex, Math.max(0, next.length - 1)),
+    }));
+  },
+
+  clearDirectorKeyframes: () => {
+    const { sceneManager, cameraMode } = get();
+    if (cameraMode === 'director') {
+      sceneManager?.exitSpecialCameraMode(true);
+    }
+    sceneManager?.setDirectorKeyframes([]);
+    set({
+      directorKeyframes: [],
+      directorTimeSec: 0,
+      directorTotalSec: 0,
+      directorActiveIndex: 0,
+      directorPlaying: false,
+    });
+  },
+
+  jumpToDirectorKeyframe: (id) => {
+    const { sceneManager, directorKeyframes, engine } = get();
+    if (!sceneManager) return;
+    const kf = directorKeyframes.find((k) => k.id === id);
+    if (!kf) return;
+    sceneManager.previewDirectorKeyframe(kf);
+    set({
+      directorPlaying: false,
+      directorActiveIndex: directorKeyframes.findIndex((k) => k.id === id),
+      timeScale: kf.timeScale,
+      bodies: engine ? engine.getBodySnapshots() : get().bodies,
+    });
+  },
+
+  generateDirectorStoryboard: () => {
+    const { sceneManager, scenarioId } = get();
+    if (!sceneManager) return;
+    const next = sceneManager.generateScenarioStoryboard(scenarioId);
+    if (next.length === 0) return;
+    sceneManager.setDirectorKeyframes(next);
+    cosmosAudio.playSpawnPing();
+    set({
+      directorKeyframes: next,
+      directorTimeSec: 0,
+      directorTotalSec: computeDirectorTotalDuration(next),
+      directorActiveIndex: 0,
+      directorPlaying: false,
+    });
+    get().showToast(`✨ 已生成「${next.length} 机位」智能分镜脚本`);
+  },
+
+  playDirectorScript: () => {
+    const { sceneManager, directorKeyframes, directorLoop, directorTimeSec, directorTotalSec } =
+      get();
+    if (!sceneManager) return;
+    if (directorKeyframes.length < 2) {
+      get().showToast('请至少记录 2 个关键机位后再预览运镜');
+      return;
+    }
+    const startAt = directorTimeSec >= directorTotalSec - 0.05 ? 0 : directorTimeSec;
+    const started = sceneManager.startDirectorPlayback(directorKeyframes, {
+      loop: directorLoop,
+      startTimeSec: startAt,
+    });
+    if (started) {
+      set({ directorPlaying: true, directorTimeSec: startAt });
+    }
+  },
+
+  toggleDirectorPause: () => {
+    const { sceneManager, cameraMode, directorPlaying } = get();
+    if (!sceneManager) return;
+    if (cameraMode !== 'director') {
+      get().playDirectorScript();
+      return;
+    }
+    if (directorPlaying) {
+      sceneManager.pauseDirectorPlayback();
+      set({ directorPlaying: false });
+    } else {
+      sceneManager.resumeDirectorPlayback();
+      set({ directorPlaying: true });
+    }
+  },
+
+  stopDirectorPlayback: () => {
+    const { sceneManager, cameraMode } = get();
+    if (!sceneManager) return;
+    if (cameraMode === 'director') {
+      sceneManager.exitSpecialCameraMode(true);
+    }
+    set({ directorPlaying: false, directorTimeSec: 0, directorActiveIndex: 0 });
+  },
+
+  seekDirectorTime: (timeSec) => {
+    const { sceneManager, directorKeyframes } = get();
+    if (!sceneManager || directorKeyframes.length === 0) return;
+    sceneManager.seekDirectorTime(timeSec, directorKeyframes);
+    set({ directorTimeSec: timeSec });
+  },
+
+  setDirectorLoop: (loop) => set({ directorLoop: loop }),
+
+  setDirectorResolution: (res) => set({ directorResolution: res }),
+
+  setDirectorFps: (fps) => set({ directorFps: fps }),
+
+  setDirectorIncludeAudio: (include) => set({ directorIncludeAudio: include }),
+
+  recordDirectorScript: () => {
+    const {
+      sceneManager,
+      directorKeyframes,
+      directorResolution,
+      directorFps,
+      directorIncludeAudio,
+      scenarioId,
+      recordingActive,
+    } = get();
+    if (!sceneManager) return;
+    if (recordingActive) {
+      void get().stopRecording();
+      return;
+    }
+    if (directorKeyframes.length < 2) {
+      get().showToast('请至少准备 2 个关键机位后再运镜录制');
+      return;
+    }
+    if (directorIncludeAudio && !get().audioMuted) {
+      cosmosAudio.ensureStarted();
+    }
+    const started = sceneManager.startDirectorPlayback(directorKeyframes, {
+      startTimeSec: 0,
+      record: {
+        resolution: directorResolution,
+        fps: directorFps,
+        includeAudio: directorIncludeAudio,
+        filenamePrefix: `${scenarioId}-choreo`,
+      },
+    });
+    if (started) {
+      set({ directorPlaying: true, directorTimeSec: 0, recordingActive: true, recordingElapsedSec: 0 });
+      get().showToast(`⏺ 开始录制纯净 WebM 关键帧短片（${directorResolution} · ${directorFps}fps）`);
+    }
+  },
+
+  toggleFreeRecording: () => {
+    const {
+      sceneManager,
+      recordingActive,
+      directorResolution,
+      directorFps,
+      directorIncludeAudio,
+      scenarioId,
+    } = get();
+    if (!sceneManager) return;
+    if (recordingActive) {
+      void get().stopRecording();
+      return;
+    }
+    if (directorIncludeAudio && !get().audioMuted) {
+      cosmosAudio.ensureStarted();
+    }
+    const ok = sceneManager.startFreeRecording({
+      resolution: directorResolution,
+      fps: directorFps,
+      includeAudio: directorIncludeAudio,
+      filenamePrefix: `${scenarioId}-live`,
+    });
+    if (ok) {
+      set({ recordingActive: true, recordingElapsedSec: 0 });
+      get().showToast(`⏺ 已开始纯净画布自由录屏（${directorResolution} · ${directorFps}fps）`);
+    }
+  },
+
+  stopRecording: async () => {
+    const { sceneManager } = get();
+    if (!sceneManager) return;
+    await sceneManager.stopVideoRecording();
+  },
+
+  exportDirectorScriptJson: () => {
+    const { scenarioId, directorKeyframes } = get();
+    if (directorKeyframes.length === 0) {
+      get().showToast('暂无关键机位可导出');
+      return;
+    }
+    const json = serializeDirectorScript(scenarioId, directorKeyframes);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `CosmosBox-${scenarioId}-script.director.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.setTimeout(() => URL.revokeObjectURL(url), 5000);
+    get().showToast(`📤 已导出运镜脚本（${directorKeyframes.length} 个机位）`);
+  },
+
+  importDirectorScriptJson: (text) => {
+    const parsed = parseDirectorScript(text);
+    if (!parsed) {
+      get().showToast('❌ 导入失败：无效的运镜脚本 JSON 格式');
+      return false;
+    }
+    const { sceneManager } = get();
+    sceneManager?.setDirectorKeyframes(parsed);
+    set({
+      directorKeyframes: parsed,
+      directorTimeSec: 0,
+      directorTotalSec: computeDirectorTotalDuration(parsed),
+      directorActiveIndex: 0,
+      directorPlaying: false,
+    });
+    get().showToast(`📥 已导入运镜脚本（${parsed.length} 个机位）`);
+    return true;
   },
 
   selectBody: (id) => {
@@ -771,6 +1152,11 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
       paused: false,
       debrisCount: 0,
       galaxyStarCount: 0,
+      directorKeyframes: [],
+      directorTimeSec: 0,
+      directorTotalSec: 0,
+      directorActiveIndex: 0,
+      directorPlaying: false,
       selectedBodyId: sceneManager.selectedBodyId,
       focusBodyId: sceneManager.focusBodyId,
       bodies: engine.getBodySnapshots(),

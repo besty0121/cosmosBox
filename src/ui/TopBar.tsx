@@ -2,6 +2,7 @@ import { useState } from 'react';
 import {
   BookmarkPlus,
   Camera,
+  Clapperboard,
   EyeOff,
   Film,
   Flame,
@@ -43,6 +44,8 @@ export function TopBar() {
   const autoThermo = useCosmosStore((s) => s.autoThermo);
   const audioMuted = useCosmosStore((s) => s.audioMuted);
   const bodyListOpen = useCosmosStore((s) => s.bodyListOpen);
+  const directorOpen = useCosmosStore((s) => s.directorOpen);
+  const recordingActive = useCosmosStore((s) => s.recordingActive);
   const simTime = useCosmosStore((s) => s.simTime);
   const fps = useCosmosStore((s) => s.fps);
   const bodyCount = useCosmosStore((s) => s.bodies.length);
@@ -66,6 +69,7 @@ export function TopBar() {
   const toggleAutoThermo = useCosmosStore((s) => s.toggleAutoThermo);
   const toggleAudioMute = useCosmosStore((s) => s.toggleAudioMute);
   const toggleBodyList = useCosmosStore((s) => s.toggleBodyList);
+  const toggleDirectorOpen = useCosmosStore((s) => s.toggleDirectorOpen);
   const toggleHud = useCosmosStore((s) => s.toggleHud);
   const setSaveModalOpen = useCosmosStore((s) => s.setSaveModalOpen);
   const takeSnapshot = useCosmosStore((s) => s.takeSnapshot);
@@ -156,6 +160,15 @@ export function TopBar() {
         >
           <Navigation size={14} />
           {cameraMode === 'flight' ? '飞船中' : '飞船'}
+        </button>
+
+        <button
+          className={`hud-btn ${directorOpen || cameraMode === 'director' || recordingActive ? 'active' : ''}`}
+          onClick={toggleDirectorOpen}
+          title="关键帧运镜脚本与纯净 WebM 视频录制 (K 记录机位)"
+        >
+          {recordingActive ? <span className="rec-dot" /> : <Clapperboard size={14} />}
+          {recordingActive ? '录制中' : '运镜'}
         </button>
 
         <button

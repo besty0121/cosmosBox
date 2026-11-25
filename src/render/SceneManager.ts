@@ -4,6 +4,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { cosmosAudio } from '../audio/CosmosAudio';
 import {
   AU,
   METERS_TO_SCENE,
@@ -21,6 +22,10 @@ import {
   CelestialBody,
   CmeImpactEvent,
   CollisionEvent,
+  DirectorFps,
+  DirectorKeyframe,
+  DirectorRecordingResult,
+  DirectorResolution,
   KilonovaEvent,
   LaunchMode,
   ScaleMode,
@@ -32,11 +37,20 @@ import {
 } from '../types/cosmos';
 import { BodyRenderer } from './BodyRenderer';
 import { DebrisRenderer } from './DebrisRenderer';
+import {
+  buildScenarioStoryboard,
+  computeDirectorTotalDuration,
+  DirectorAstroPatch,
+  nextDirectorKeyframeId,
+  resolveKeyframeAnchorMeters,
+  sampleDirectorPose,
+} from './DirectorEngine';
 import { GalaxyRenderer } from './GalaxyRenderer';
 import { HighEnergyRenderer } from './HighEnergyRenderer';
 import { ScienceOverlays } from './overlays/ScienceOverlays';
 import { SpacetimeGrid } from './overlays/SpacetimeGrid';
 import { textureAtlas } from './TextureAtlas';
+import { VideoRecorder } from './VideoRecorder';
 
 export type GraphicsQuality = 'high' | 'fast';
 
@@ -73,6 +87,19 @@ export interface SceneCallbacks {
   onTelemetryTick: (fps: number) => void;
   onFlightTelemetry?: (gearIndex: number, speedUnits: number) => void;
   onLabelsUpdate: (labels: ScreenLabel[]) => void;
+  onDirectorTelemetry?: (
+    timeSec: number,
+    totalSec: number,
+    activeIndex: number,
+    playing: boolean
+  ) => void;
+  onDirectorFinished?: (wasRecording: boolean) => void;
+  onRecordingStateChange?: (
+    recording: boolean,
+    elapsedSec: number,
+    result?: DirectorRecordingResult,
+    errorMsg?: string
+  ) => void;
 }
 
 export class SceneManager {
@@ -139,6 +166,15 @@ export class SceneManager {
   private flightForward = new THREE.Vector3();
   private flightRight = new THREE.Vector3();
   private flightUp = new THREE.Vector3();
+
+  // Keyframe Director & Clean WebM Video Recording state
+  private directorKeyframes: DirectorKeyframe[] = [];
+  private directorTimeSec = 0;
+  private directorPlaying = false;
+  private directorLoop = false;
+  private directorRecordOnPlay = false;
+  private recordingSizeLock: { width: number; height: number } | null = null;
+  private videoRecorder = new VideoRecorder();
 
   // Floating origin in SI meters (tracks focused body for zero float jitter)
   private originMeters: Vec3 = { x: 0, y: 0, z: 0 };
@@ -457,7 +493,23 @@ export class SceneManager {
     this.camera.up.set(0, 1, 0);
     this.controls.enabled = true;
 
-    if (prevMode === 'surface' && prevBodyId) {
+    if (prevMode === 'director') {
+      this.directorPlaying = false;
+      const shouldStopRec = this.directorRecordOnPlay && this.videoRecorder.isRecording();
+      this.directorRecordOnPlay = false;
+      if (Math.abs(this.camera.fov - 48) > 0.05) {
+        this.camera.fov = 48;
+        this.camera.updateProjectionMatrix();
+      }
+      const { centerDist } = this.getNearestVisualDistance();
+      const targetDist = THREE.MathUtils.clamp(centerDist * 0.75, 12, 280);
+      this.flightForward.set(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
+      this.controls.target.copy(this.camera.position).addScaledVector(this.flightForward, targetDist);
+      this.controls.update();
+      if (shouldStopRec) {
+        void this.stopVideoRecording();
+      }
+    } else if (prevMode === 'surface' && prevBodyId) {
       // Pull back gracefully to orbital view around the body we just lifted off from
       this.focusOnBody(prevBodyId, true);
     } else if (prevMode === 'flight') {
@@ -473,6 +525,389 @@ export class SceneManager {
     if (notify) {
       this.callbacks.onCameraModeChange('orbit', null);
     }
+  }
+
+  public captureCurrentKeyframe(name?: string): DirectorKeyframe {
+    const alive = this.engine.bodies.filter((b) => b.alive);
+    const anchorBody =
+      (this.focusBodyId ? this.engine.getBody(this.focusBodyId) : null) ??
+      (this.selectedBodyId ? this.engine.getBody(this.selectedBodyId) : null);
+
+    const originMeters: Vec3 = anchorBody ? { ...anchorBody.position } : { ...this.originMeters };
+    const relPos = new THREE.Vector3(
+      (this.originMeters.x - originMeters.x) * METERS_TO_SCENE + this.camera.position.x,
+      (this.originMeters.y - originMeters.y) * METERS_TO_SCENE + this.camera.position.y,
+      (this.originMeters.z - originMeters.z) * METERS_TO_SCENE + this.camera.position.z
+    );
+
+    const pillars = alive.find((b) => b.nebulaType === 'pillars_of_creation');
+    const andromeda = alive.find((b) => b.galaxyType === 'andromeda');
+    const earth = alive.find((b) => b.name.includes('地球') || b.auroraIntensity !== undefined);
+    const lens = alive.find((b) => b.isGravitationalLens);
+
+    return {
+      id: nextDirectorKeyframeId(),
+      name: name ?? `机位`,
+      durationSec: 4.5,
+      holdSec: 0.4,
+      easing: 'cinematicSlow',
+      anchorBodyId: anchorBody?.id ?? null,
+      anchorBodyName: anchorBody?.name ?? null,
+      position: { x: relPos.x, y: relPos.y, z: relPos.z },
+      originMeters,
+      quaternion: [
+        this.camera.quaternion.x,
+        this.camera.quaternion.y,
+        this.camera.quaternion.z,
+        this.camera.quaternion.w,
+      ],
+      fov: Math.round(this.camera.fov * 10) / 10,
+      timeScale: Math.max(1, this.engine.timeScale),
+      ...(pillars
+        ? {
+            nebulaSpectrumMode: pillars.nebulaSpectrumMode,
+            nebulaIrPenetration: pillars.nebulaIrPenetration,
+          }
+        : {}),
+      ...(andromeda
+        ? {
+            galaxySpectrumMode: andromeda.galaxySpectrumMode,
+            galaxyDustOpacity: andromeda.galaxyDustOpacity,
+          }
+        : {}),
+      ...(earth && earth.auroraIntensity !== undefined
+        ? { auroraIntensity: earth.auroraIntensity }
+        : {}),
+      ...(lens && lens.lensShear !== undefined ? { lensShear: lens.lensShear } : {}),
+    };
+  }
+
+  public previewDirectorKeyframe(kf: DirectorKeyframe): void {
+    this.exitSpecialCameraMode(false);
+    this.cameraMode = 'orbit';
+    this.surfaceBodyId = null;
+    this.controls.enabled = true;
+
+    const anchor = resolveKeyframeAnchorMeters(kf, this.engine.bodies);
+    const matchedAnchor =
+      (kf.anchorBodyId ? this.engine.getBody(kf.anchorBodyId) : null) ??
+      (kf.anchorBodyName
+        ? this.engine.bodies.find((b) => b.alive && b.name === kf.anchorBodyName) ?? null
+        : null);
+    this.focusBodyId = matchedAnchor?.id ?? null;
+    this.originMeters = { ...anchor };
+
+    this.camera.position.set(kf.position.x, kf.position.y, kf.position.z);
+    this.camera.quaternion.set(...kf.quaternion).normalize();
+    this.camera.up.set(0, 1, 0);
+    if (Math.abs(this.camera.fov - kf.fov) > 0.05) {
+      this.camera.fov = kf.fov;
+      this.camera.updateProjectionMatrix();
+    }
+    this.engine.timeScale = Math.max(1, kf.timeScale);
+    this.applyDirectorAstroPatch(kf);
+
+    const { centerDist } = this.getNearestVisualDistance();
+    const targetDist = THREE.MathUtils.clamp(centerDist * 0.85, 2, 320);
+    this.flightForward.set(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
+    this.controls.target.copy(this.camera.position).addScaledVector(this.flightForward, targetDist);
+    this.controls.update();
+    this.callbacks.onCameraModeChange('orbit', null);
+  }
+
+  public generateScenarioStoryboard(scenarioId: string): DirectorKeyframe[] {
+    return buildScenarioStoryboard(
+      scenarioId,
+      this.engine.bodies,
+      this.camera.position,
+      this.originMeters,
+      this.focusBodyId,
+      this.engine.timeScale
+    );
+  }
+
+  public setDirectorKeyframes(keyframes: DirectorKeyframe[]): void {
+    this.directorKeyframes = keyframes;
+  }
+
+  public startDirectorPlayback(
+    keyframes: DirectorKeyframe[],
+    options: {
+      loop?: boolean;
+      startTimeSec?: number;
+      record?: {
+        resolution: DirectorResolution;
+        fps: DirectorFps;
+        includeAudio: boolean;
+        filenamePrefix: string;
+      };
+    } = {}
+  ): boolean {
+    if (keyframes.length < 2) return false;
+    this.exitSpecialCameraMode(false);
+    this.setSpawnMode(false, null, this.launchMode);
+    this.flightKeys.clear();
+    this.flightVelocity.set(0, 0, 0);
+
+    const total = computeDirectorTotalDuration(keyframes);
+    this.directorKeyframes = keyframes;
+    this.directorTimeSec = Math.max(0, Math.min(options.startTimeSec ?? 0, Math.max(0, total - 0.01)));
+    this.directorPlaying = true;
+    this.directorLoop = Boolean(options.loop) && !options.record;
+    this.directorRecordOnPlay = Boolean(options.record);
+    this.cameraMode = 'director';
+    this.surfaceBodyId = null;
+    this.focusBodyId = null;
+    this.controls.enabled = false;
+
+    this.applyDirectorSample(this.directorTimeSec);
+
+    if (options.record) {
+      const ok = this.beginCanvasRecording(options.record);
+      if (!ok) {
+        this.directorPlaying = false;
+        this.directorRecordOnPlay = false;
+        this.exitSpecialCameraMode(true);
+        return false;
+      }
+    }
+
+    this.callbacks.onCameraModeChange('director', null);
+    const activeSample = sampleDirectorPose(
+      this.directorKeyframes,
+      this.directorTimeSec,
+      this.engine.bodies
+    );
+    this.callbacks.onDirectorTelemetry?.(
+      this.directorTimeSec,
+      total,
+      activeSample.activeIndex,
+      true
+    );
+    return true;
+  }
+
+  public pauseDirectorPlayback(): void {
+    if (this.cameraMode !== 'director') return;
+    this.directorPlaying = false;
+    const total = computeDirectorTotalDuration(this.directorKeyframes);
+    const sample = sampleDirectorPose(this.directorKeyframes, this.directorTimeSec, this.engine.bodies);
+    this.callbacks.onDirectorTelemetry?.(this.directorTimeSec, total, sample.activeIndex, false);
+  }
+
+  public resumeDirectorPlayback(): void {
+    if (this.cameraMode !== 'director' || this.directorKeyframes.length < 2) return;
+    const total = computeDirectorTotalDuration(this.directorKeyframes);
+    if (this.directorTimeSec >= total - 0.02) {
+      this.directorTimeSec = 0;
+    }
+    this.directorPlaying = true;
+    const sample = sampleDirectorPose(this.directorKeyframes, this.directorTimeSec, this.engine.bodies);
+    this.callbacks.onDirectorTelemetry?.(this.directorTimeSec, total, sample.activeIndex, true);
+  }
+
+  public seekDirectorTime(timeSec: number, keyframes?: DirectorKeyframe[]): void {
+    if (keyframes) {
+      this.directorKeyframes = keyframes;
+    }
+    if (this.directorKeyframes.length === 0) return;
+    const total = computeDirectorTotalDuration(this.directorKeyframes);
+    this.directorTimeSec = Math.max(0, Math.min(timeSec, total));
+    if (this.cameraMode !== 'director') {
+      this.exitSpecialCameraMode(false);
+      this.cameraMode = 'director';
+      this.directorPlaying = false;
+      this.directorRecordOnPlay = false;
+      this.controls.enabled = false;
+      this.callbacks.onCameraModeChange('director', null);
+    }
+    const sample = this.applyDirectorSample(this.directorTimeSec);
+    this.callbacks.onDirectorTelemetry?.(
+      this.directorTimeSec,
+      total,
+      sample.activeIndex,
+      this.directorPlaying
+    );
+  }
+
+  public startFreeRecording(opts: {
+    resolution: DirectorResolution;
+    fps: DirectorFps;
+    includeAudio: boolean;
+    filenamePrefix: string;
+  }): boolean {
+    if (this.videoRecorder.isRecording()) return false;
+    this.directorRecordOnPlay = false;
+    return this.beginCanvasRecording(opts);
+  }
+
+  public async stopVideoRecording(): Promise<DirectorRecordingResult | null> {
+    this.directorRecordOnPlay = false;
+    const result = await this.videoRecorder.stop();
+    this.unlockRecordingResolution();
+    this.callbacks.onRecordingStateChange?.(false, 0, result ?? undefined);
+    return result;
+  }
+
+  public isVideoRecording(): boolean {
+    return this.videoRecorder.isRecording();
+  }
+
+  private beginCanvasRecording(opts: {
+    resolution: DirectorResolution;
+    fps: DirectorFps;
+    includeAudio: boolean;
+    filenamePrefix: string;
+  }): boolean {
+    const { width, height } = this.lockRecordingResolution(opts.resolution);
+    const audioStream = opts.includeAudio ? cosmosAudio.getMediaStream() : null;
+    try {
+      this.videoRecorder.start({
+        canvas: this.renderer.domElement,
+        fps: opts.fps,
+        width,
+        height,
+        filenamePrefix: opts.filenamePrefix,
+        audioStream,
+      });
+      this.callbacks.onRecordingStateChange?.(true, 0);
+      return true;
+    } catch (err) {
+      this.unlockRecordingResolution();
+      const msg = err instanceof Error ? err.message : '启动视频录制失败';
+      this.callbacks.onRecordingStateChange?.(false, 0, undefined, msg);
+      return false;
+    }
+  }
+
+  private lockRecordingResolution(resolution: DirectorResolution): { width: number; height: number } {
+    const dom = this.renderer.domElement;
+    if (resolution === 'viewport') {
+      return { width: dom.width, height: dom.height };
+    }
+    const width = resolution === '1080p' ? 1920 : 1280;
+    const height = resolution === '1080p' ? 1080 : 720;
+    this.recordingSizeLock = { width, height };
+    dom.style.objectFit = 'contain';
+    this.camera.aspect = width / height;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setPixelRatio(1);
+    this.renderer.setSize(width, height, false);
+    this.composer.setSize(width, height);
+    this.bloomPass.setSize(Math.floor(width / 2), Math.floor(height / 2));
+    if (this.graphicsQuality === 'fast') {
+      this.renderer.render(this.scene, this.camera);
+    } else {
+      this.composer.render();
+    }
+    return { width, height };
+  }
+
+  private unlockRecordingResolution(): void {
+    if (!this.recordingSizeLock) return;
+    this.recordingSizeLock = null;
+    this.renderer.domElement.style.objectFit = '';
+    this.setGraphicsQuality(this.graphicsQuality);
+    this.handleResize();
+  }
+
+  private applyDirectorAstroPatch(patch: DirectorAstroPatch): void {
+    if (
+      patch.nebulaSpectrumMode !== undefined ||
+      patch.nebulaIrPenetration !== undefined
+    ) {
+      const pillars = this.engine.bodies.find(
+        (b) => b.alive && b.nebulaType === 'pillars_of_creation'
+      );
+      if (pillars) {
+        if (patch.nebulaSpectrumMode !== undefined) {
+          pillars.nebulaSpectrumMode = patch.nebulaSpectrumMode;
+        }
+        if (patch.nebulaIrPenetration !== undefined) {
+          pillars.nebulaIrPenetration = patch.nebulaIrPenetration;
+        }
+      }
+    }
+    if (
+      patch.galaxySpectrumMode !== undefined ||
+      patch.galaxyDustOpacity !== undefined
+    ) {
+      const andromeda = this.engine.bodies.find(
+        (b) => b.alive && b.galaxyType === 'andromeda'
+      );
+      if (andromeda) {
+        if (patch.galaxySpectrumMode !== undefined) {
+          andromeda.galaxySpectrumMode = patch.galaxySpectrumMode;
+        }
+        if (patch.galaxyDustOpacity !== undefined) {
+          andromeda.galaxyDustOpacity = patch.galaxyDustOpacity;
+        }
+      }
+    }
+    if (patch.auroraIntensity !== undefined) {
+      const earth = this.engine.bodies.find(
+        (b) => b.alive && (b.name.includes('地球') || b.auroraIntensity !== undefined)
+      );
+      if (earth) {
+        earth.auroraIntensity = patch.auroraIntensity;
+      }
+    }
+    if (patch.lensShear !== undefined) {
+      const lens = this.engine.bodies.find((b) => b.alive && b.isGravitationalLens);
+      if (lens) {
+        lens.lensShear = patch.lensShear;
+      }
+    }
+  }
+
+  private applyDirectorSample(timeSec: number) {
+    const sample = sampleDirectorPose(this.directorKeyframes, timeSec, this.engine.bodies);
+    this.originMeters = { ...sample.originMeters };
+    this.camera.position.copy(sample.position);
+    this.camera.quaternion.copy(sample.quaternion);
+    if (Math.abs(this.camera.fov - sample.fov) > 0.05) {
+      this.camera.fov = sample.fov;
+      this.camera.updateProjectionMatrix();
+    }
+    this.engine.timeScale = sample.timeScale;
+    this.applyDirectorAstroPatch(sample.astroPatch);
+    return sample;
+  }
+
+  private updateDirectorCamera(dt: number): void {
+    if (this.directorKeyframes.length === 0) {
+      this.exitSpecialCameraMode(true);
+      return;
+    }
+    const total = computeDirectorTotalDuration(this.directorKeyframes);
+    if (this.directorPlaying) {
+      this.directorTimeSec += dt;
+    }
+    const sample = sampleDirectorPose(
+      this.directorKeyframes,
+      this.directorTimeSec,
+      this.engine.bodies
+    );
+    if (sample.finished && this.directorPlaying) {
+      if (this.directorLoop && !this.directorRecordOnPlay && total > 0) {
+        this.directorTimeSec = 0;
+        this.applyDirectorSample(0);
+        return;
+      }
+      this.directorTimeSec = total;
+      this.applyDirectorSample(total);
+      this.directorPlaying = false;
+      const wasRec = this.directorRecordOnPlay && this.videoRecorder.isRecording();
+      this.directorRecordOnPlay = false;
+      this.callbacks.onDirectorTelemetry?.(total, total, sample.activeIndex, false);
+      this.callbacks.onDirectorFinished?.(wasRec);
+      if (wasRec) {
+        void this.stopVideoRecording();
+        this.exitSpecialCameraMode(true);
+      }
+      return;
+    }
+    this.applyDirectorSample(this.directorTimeSec);
   }
 
   private getCinematicPlaylist(): CelestialBody[] {
@@ -666,11 +1101,17 @@ export class SceneManager {
 
   public setGraphicsQuality(quality: GraphicsQuality): void {
     this.graphicsQuality = quality;
-    const width = this.container.clientWidth || window.innerWidth;
-    const height = this.container.clientHeight || window.innerHeight;
-    const dpr = quality === 'fast' ? 1 : Math.min(window.devicePixelRatio, 1.25);
+    const width = this.recordingSizeLock?.width ?? (this.container.clientWidth || window.innerWidth);
+    const height = this.recordingSizeLock?.height ?? (this.container.clientHeight || window.innerHeight);
+    const dpr = this.recordingSizeLock
+      ? 1
+      : quality === 'fast'
+        ? 1
+        : Math.min(window.devicePixelRatio, 1.25);
+    this.camera.aspect = width / height;
+    this.camera.updateProjectionMatrix();
     this.renderer.setPixelRatio(dpr);
-    this.renderer.setSize(width, height);
+    this.renderer.setSize(width, height, !this.recordingSizeLock);
     this.composer.setSize(width, height);
     this.bloomPass.setSize(
       Math.max(1, Math.floor(width / 2)),
@@ -1253,6 +1694,8 @@ export class SceneManager {
   }
 
   private handlePointerDown = (e: PointerEvent): void => {
+    if (this.cameraMode === 'director') return;
+
     // Any pointer interaction during Cinematic Auto-Tour smoothly hands control back to user!
     if (this.cameraMode === 'cinematic') {
       this.exitSpecialCameraMode(true);
@@ -1299,6 +1742,8 @@ export class SceneManager {
   };
 
   private handlePointerMove = (e: PointerEvent): void => {
+    if (this.cameraMode === 'director') return;
+
     if (this.cameraMode === 'surface' && this.isDraggingSurface) {
       const dx = e.clientX - this.lastSurfacePointer.x;
       const dy = e.clientY - this.lastSurfacePointer.y;
@@ -1328,6 +1773,8 @@ export class SceneManager {
   };
 
   private handlePointerUp = (e: PointerEvent): void => {
+    if (this.cameraMode === 'director') return;
+
     if (this.cameraMode === 'surface') {
       this.isDraggingSurface = false;
       return;
@@ -1403,6 +1850,7 @@ export class SceneManager {
   };
 
   private handleResize = (): void => {
+    if (this.recordingSizeLock !== null) return;
     const width = this.container.clientWidth || window.innerWidth;
     const height = this.container.clientHeight || window.innerHeight;
     this.camera.aspect = width / height;
@@ -1421,6 +1869,10 @@ export class SceneManager {
   };
 
   private handleWheel = (e: WheelEvent): void => {
+    if (this.cameraMode === 'director') {
+      e.preventDefault();
+      return;
+    }
     if (this.cameraMode === 'cinematic') {
       this.exitSpecialCameraMode(true);
       return;
@@ -1463,6 +1915,9 @@ export class SceneManager {
 
   private handleVisibilityChange = (): void => {
     if (document.hidden) {
+      if (this.videoRecorder.isRecording()) {
+        void this.stopVideoRecording();
+      }
       if (this.rafId !== 0) {
         cancelAnimationFrame(this.rafId);
         this.rafId = 0;
@@ -1518,13 +1973,15 @@ export class SceneManager {
       this.callbacks.onCmeImpact(ci);
     }
 
-    // 2. Camera mode update (Surface First-Person / Cinematic Auto-Tour / 6-DOF Free-Flight / Free Orbit)
+    // 2. Camera mode update (Surface / Cinematic / 6-DOF Flight / Keyframe Director / Orbit)
     if (this.cameraMode === 'surface') {
       this.updateSurfaceCamera();
     } else if (this.cameraMode === 'cinematic') {
       this.updateCinematicCamera(dt);
     } else if (this.cameraMode === 'flight') {
       this.updateFlightCamera(dt);
+    } else if (this.cameraMode === 'director') {
+      this.updateDirectorCamera(dt);
     } else {
       // Orbit mode: track floating origin if locked onto a body
       const focusBody = this.engine.getBody(this.focusBodyId);
@@ -1542,11 +1999,11 @@ export class SceneManager {
     const camDist =
       this.cameraMode === 'surface'
         ? 0.04
-        : this.cameraMode === 'flight'
+        : this.cameraMode === 'flight' || this.cameraMode === 'director'
           ? Math.max(0.25, Math.min(200, this.getNearestVisualDistance().clearance * 0.35))
           : this.camera.position.distanceTo(this.controls.target);
     const desiredNear =
-      this.cameraMode === 'flight'
+      this.cameraMode === 'flight' || this.cameraMode === 'director'
         ? Math.max(0.004, Math.min(0.5, camDist * 0.04))
         : Math.max(0.0004, Math.min(2.0, camDist * 0.002));
     const desiredFar = Math.max(60000, camDist * 250);
@@ -1669,12 +2126,30 @@ export class SceneManager {
       this.callbacks.onTelemetryTick(fps);
       if (this.cameraMode === 'flight') {
         this.callbacks.onFlightTelemetry?.(this.flightGearIndex, this.flightVelocity.length());
+      } else if (this.cameraMode === 'director') {
+        const total = computeDirectorTotalDuration(this.directorKeyframes);
+        const activeSample = sampleDirectorPose(
+          this.directorKeyframes,
+          this.directorTimeSec,
+          this.engine.bodies
+        );
+        this.callbacks.onDirectorTelemetry?.(
+          this.directorTimeSec,
+          total,
+          activeSample.activeIndex,
+          this.directorPlaying
+        );
+      }
+      if (this.videoRecorder.isRecording()) {
+        this.callbacks.onRecordingStateChange?.(true, this.videoRecorder.getElapsedSec());
       }
     }
   };
 
   public dispose(): void {
     this.disposed = true;
+    this.videoRecorder.abort();
+    this.unlockRecordingResolution();
     cancelAnimationFrame(this.rafId);
     const dom = this.renderer.domElement;
     dom.removeEventListener('pointerdown', this.handlePointerDown);

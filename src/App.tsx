@@ -1,5 +1,19 @@
 import { useEffect, useRef } from 'react';
-import { Camera, Compass, Eye, Film, Minus, Navigation, Plus, RefreshCw, X } from 'lucide-react';
+import {
+  Camera,
+  Clapperboard,
+  Compass,
+  Eye,
+  Film,
+  Minus,
+  Navigation,
+  Pause,
+  Play,
+  Plus,
+  RefreshCw,
+  Square,
+  X,
+} from 'lucide-react';
 import { cosmosAudio } from './audio/CosmosAudio';
 import { SimulationEngine } from './physics/SimulationEngine';
 import { FLIGHT_GEARS, FLIGHT_GEAR_LABELS, SceneManager } from './render/SceneManager';
@@ -7,6 +21,7 @@ import { useCosmosStore } from './store/useCosmosStore';
 import { BodyLabelsOverlay } from './ui/BodyLabelsOverlay';
 import { BodyListDrawer } from './ui/BodyListDrawer';
 import { BottomDock } from './ui/BottomDock';
+import { DirectorPanel } from './ui/DirectorPanel';
 import { InspectorPanel } from './ui/InspectorPanel';
 import { SaveLoadModal } from './ui/SaveLoadModal';
 import { TopBar } from './ui/TopBar';
@@ -20,11 +35,20 @@ export function App() {
   const cameraTargetName = useCosmosStore((s) => s.cameraTargetName);
   const flightGearIndex = useCosmosStore((s) => s.flightGearIndex);
   const flightSpeedUnits = useCosmosStore((s) => s.flightSpeedUnits);
+  const directorKeyframes = useCosmosStore((s) => s.directorKeyframes);
+  const directorTimeSec = useCosmosStore((s) => s.directorTimeSec);
+  const directorTotalSec = useCosmosStore((s) => s.directorTotalSec);
+  const directorActiveIndex = useCosmosStore((s) => s.directorActiveIndex);
+  const directorPlaying = useCosmosStore((s) => s.directorPlaying);
+  const recordingActive = useCosmosStore((s) => s.recordingActive);
+  const recordingElapsedSec = useCosmosStore((s) => s.recordingElapsedSec);
   const toast = useCosmosStore((s) => s.toast);
   const toggleHud = useCosmosStore((s) => s.toggleHud);
   const captureScreenshot = useCosmosStore((s) => s.captureScreenshot);
   const cycleSurfaceSpot = useCosmosStore((s) => s.cycleSurfaceSpot);
   const shiftFlightGear = useCosmosStore((s) => s.shiftFlightGear);
+  const toggleDirectorPause = useCosmosStore((s) => s.toggleDirectorPause);
+  const stopRecording = useCosmosStore((s) => s.stopRecording);
   const exitSpecialCameraMode = useCosmosStore((s) => s.exitSpecialCameraMode);
 
   useEffect(() => {
@@ -77,6 +101,42 @@ export function App() {
       onLabelsUpdate: (labels) => {
         useCosmosStore.getState().setScreenLabels(labels);
       },
+      onDirectorTelemetry: (timeSec, totalSec, activeIndex, playing) => {
+        useCosmosStore.setState({
+          directorTimeSec: timeSec,
+          directorTotalSec: totalSec,
+          directorActiveIndex: activeIndex,
+          directorPlaying: playing,
+        });
+      },
+      onDirectorFinished: (wasRecording) => {
+        if (!wasRecording) {
+          useCosmosStore.getState().showToast('✅ 关键帧运镜预览完成');
+        }
+      },
+      onRecordingStateChange: (recording, elapsedSec, result, errorMsg) => {
+        const st = useCosmosStore.getState();
+        if (errorMsg) {
+          useCosmosStore.setState({ recordingActive: false, recordingElapsedSec: 0 });
+          st.showToast(`❌ ${errorMsg}`);
+          return;
+        }
+        if (result) {
+          cosmosAudio.playSpawnPing();
+          useCosmosStore.setState({
+            recordingActive: false,
+            recordingElapsedSec: 0,
+            lastRecording: result,
+          });
+          const mb = (result.sizeBytes / (1024 * 1024)).toFixed(2);
+          st.showToast(`🎬 已保存纯净 WebM 短片：${result.filename}（${mb} MB）`);
+          return;
+        }
+        useCosmosStore.setState({
+          recordingActive: recording,
+          recordingElapsedSec: elapsedSec,
+        });
+      },
     });
 
     useCosmosStore.getState().attachRuntime(engine, sceneManager);
@@ -90,16 +150,26 @@ export function App() {
     window.addEventListener('pointerdown', unlockAudio);
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLSelectElement ||
+        e.target instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
       const st = useCosmosStore.getState();
       if (e.code === 'Space') {
         e.preventDefault();
         st.togglePause();
       } else if (e.code === 'Escape') {
-        if (st.cameraMode !== 'orbit') {
+        if (st.recordingActive) {
+          void st.stopRecording();
+        } else if (st.cameraMode !== 'orbit') {
           st.exitSpecialCameraMode();
         } else if (st.saveModalOpen) {
           st.setSaveModalOpen(false);
+        } else if (st.directorOpen) {
+          st.setDirectorOpen(false);
         } else if (st.spawnActive) {
           st.setSpawnActive(false);
         } else {
@@ -108,7 +178,7 @@ export function App() {
       } else if (e.key === 'h' || e.key === 'H') {
         st.toggleHud();
       } else if (e.key === 'r' || e.key === 'R') {
-        st.resetScenario();
+        if (!st.recordingActive) st.resetScenario();
       } else if (e.key === 'g' || e.key === 'G') {
         st.toggleGravityGrid();
       } else if (e.key === 'l' || e.key === 'L') {
@@ -117,6 +187,8 @@ export function App() {
         st.toggleCinematicTour();
       } else if (e.key === 'f' || e.key === 'F') {
         st.toggleFreeFlight();
+      } else if ((e.key === 'k' || e.key === 'K') && st.directorOpen) {
+        st.addDirectorKeyframe();
       } else if (e.key === 'v' || e.key === 'V') {
         if (st.cameraMode === 'surface') {
           st.exitSpecialCameraMode();
@@ -146,6 +218,7 @@ export function App() {
           <BodyLabelsOverlay />
           <TopBar />
           <BodyListDrawer />
+          <DirectorPanel />
           <InspectorPanel />
           <BottomDock />
           <SaveLoadModal />
@@ -230,6 +303,62 @@ export function App() {
             </div>
           )}
 
+          {recordingActive && (
+            <div className="glass-panel camera-mode-banner rec-banner">
+              <span className="rec-dot" />
+              <span>
+                正在录制纯净 WebM ·{' '}
+                <strong className="mono">{recordingElapsedSec.toFixed(1)}s</strong>
+              </span>
+              {cameraMode === 'director' && directorKeyframes.length > 0 && (
+                <span className="mono" style={{ color: '#9edbff', fontSize: 11.5 }}>
+                  机位 {directorActiveIndex + 1}/{directorKeyframes.length}
+                </span>
+              )}
+              <button
+                className="hud-btn danger"
+                style={{ height: 26, fontSize: 11.5 }}
+                onClick={() => void stopRecording()}
+              >
+                <Square size={11} />
+                停止并保存
+              </button>
+            </div>
+          )}
+
+          {!recordingActive && cameraMode === 'director' && (
+            <div className="glass-panel camera-mode-banner">
+              <Clapperboard size={15} color="#5ce1ff" />
+              <span>
+                关键帧运镜 · 机位{' '}
+                <strong>
+                  {Math.min(directorActiveIndex + 1, Math.max(1, directorKeyframes.length))}/
+                  {Math.max(1, directorKeyframes.length)}
+                </strong>{' '}
+                ·{' '}
+                <span className="mono">
+                  {directorTimeSec.toFixed(1)}s / {directorTotalSec.toFixed(1)}s
+                </span>
+              </span>
+              <button
+                className="hud-btn"
+                style={{ height: 26, fontSize: 11.5 }}
+                onClick={toggleDirectorPause}
+              >
+                {directorPlaying ? <Pause size={12} /> : <Play size={12} />}
+                {directorPlaying ? '暂停' : '继续'}
+              </button>
+              <button
+                className="hud-btn amber active"
+                style={{ height: 26, fontSize: 11.5 }}
+                onClick={exitSpecialCameraMode}
+              >
+                <X size={12} />
+                退出运镜 (Esc)
+              </button>
+            </div>
+          )}
+
           {toast && <div className="cosmos-toast">{toast}</div>}
 
           <div className="glass-panel controls-hint">
@@ -241,13 +370,23 @@ export function App() {
             ) : (
               <>
                 <div>左键旋转 · 右键平移 · 滚轮缩放</div>
-                <div>空格 暂停 · G 时空网格 · V 地表观景 · F 自由飞船 · C 巡航 · H 隐藏界面</div>
+                <div>空格 暂停 · G 时空网格 · V 地表 · F 飞船 · C 巡航 · K 录机位 · H 隐藏</div>
               </>
             )}
           </div>
         </div>
       ) : (
         <div className="hud-restore-group">
+          {recordingActive && (
+            <button
+              className="glass-panel hud-btn danger"
+              onClick={() => void stopRecording()}
+              title="停止并保存当前 WebM 录制"
+            >
+              <span className="rec-dot" />
+              停止录制 ({recordingElapsedSec.toFixed(1)}s)
+            </button>
+          )}
           <button className="glass-panel hud-btn" onClick={captureScreenshot} title="保存无 UI 高清截图">
             <Camera size={14} />
             截图
