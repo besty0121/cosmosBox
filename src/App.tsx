@@ -1,8 +1,8 @@
 import { useEffect, useRef } from 'react';
-import { Camera, Compass, Eye, Film, RefreshCw, X } from 'lucide-react';
+import { Camera, Compass, Eye, Film, Minus, Navigation, Plus, RefreshCw, X } from 'lucide-react';
 import { cosmosAudio } from './audio/CosmosAudio';
 import { SimulationEngine } from './physics/SimulationEngine';
-import { SceneManager } from './render/SceneManager';
+import { FLIGHT_GEARS, FLIGHT_GEAR_LABELS, SceneManager } from './render/SceneManager';
 import { useCosmosStore } from './store/useCosmosStore';
 import { BodyLabelsOverlay } from './ui/BodyLabelsOverlay';
 import { BodyListDrawer } from './ui/BodyListDrawer';
@@ -18,10 +18,13 @@ export function App() {
   const spawnActive = useCosmosStore((s) => s.spawnActive);
   const cameraMode = useCosmosStore((s) => s.cameraMode);
   const cameraTargetName = useCosmosStore((s) => s.cameraTargetName);
+  const flightGearIndex = useCosmosStore((s) => s.flightGearIndex);
+  const flightSpeedUnits = useCosmosStore((s) => s.flightSpeedUnits);
   const toast = useCosmosStore((s) => s.toast);
   const toggleHud = useCosmosStore((s) => s.toggleHud);
   const captureScreenshot = useCosmosStore((s) => s.captureScreenshot);
   const cycleSurfaceSpot = useCosmosStore((s) => s.cycleSurfaceSpot);
+  const shiftFlightGear = useCosmosStore((s) => s.shiftFlightGear);
   const exitSpecialCameraMode = useCosmosStore((s) => s.exitSpecialCameraMode);
 
   useEffect(() => {
@@ -65,6 +68,12 @@ export function App() {
       onTelemetryTick: (fps) => {
         useCosmosStore.getState().syncTelemetry(fps);
       },
+      onFlightTelemetry: (gearIndex, speedUnits) => {
+        useCosmosStore.setState({
+          flightGearIndex: gearIndex,
+          flightSpeedUnits: speedUnits,
+        });
+      },
       onLabelsUpdate: (labels) => {
         useCosmosStore.getState().setScreenLabels(labels);
       },
@@ -106,6 +115,8 @@ export function App() {
         st.toggleLabels();
       } else if (e.key === 'c' || e.key === 'C') {
         st.toggleCinematicTour();
+      } else if (e.key === 'f' || e.key === 'F') {
+        st.toggleFreeFlight();
       } else if (e.key === 'v' || e.key === 'V') {
         if (st.cameraMode === 'surface') {
           st.exitSpecialCameraMode();
@@ -182,11 +193,57 @@ export function App() {
             </div>
           )}
 
+          {cameraMode === 'flight' && (
+            <div className="glass-panel camera-mode-banner">
+              <Navigation size={15} color="#5ce1ff" />
+              <span>
+                自由飞船巡航 · 挡位 <strong>{flightGearIndex + 1}/{FLIGHT_GEARS.length}</strong>{' '}
+                ({FLIGHT_GEAR_LABELS[flightGearIndex]})
+              </span>
+              <button
+                className="hud-btn icon-only"
+                style={{ height: 24, width: 24 }}
+                onClick={() => shiftFlightGear(-1)}
+                title="降挡减速（滚轮向下）"
+              >
+                <Minus size={12} />
+              </button>
+              <button
+                className="hud-btn icon-only"
+                style={{ height: 24, width: 24 }}
+                onClick={() => shiftFlightGear(1)}
+                title="升挡加速（滚轮向上）"
+              >
+                <Plus size={12} />
+              </button>
+              <span className="mono" style={{ color: '#8ad8ff', fontSize: 11.5 }}>
+                {flightSpeedUnits < 10 ? flightSpeedUnits.toFixed(1) : Math.round(flightSpeedUnits)} u/s
+              </span>
+              <button
+                className="hud-btn amber active"
+                style={{ height: 26, fontSize: 11.5 }}
+                onClick={exitSpecialCameraMode}
+              >
+                <X size={12} />
+                退出飞船 (F)
+              </button>
+            </div>
+          )}
+
           {toast && <div className="cosmos-toast">{toast}</div>}
 
           <div className="glass-panel controls-hint">
-            <div>左键旋转 · 右键平移 · 滚轮缩放</div>
-            <div>空格 暂停 · G 时空网格 · V 地表观景 · C 电影巡航 · H 隐藏界面</div>
+            {cameraMode === 'flight' ? (
+              <>
+                <div>WASD 前后左右 · Q/E 垂直升降 · Shift 3×冲刺 · X 刹车</div>
+                <div>左拖转向 · 右拖滚转 · 滚轮 8 挡变速 · F/Esc 返回轨道</div>
+              </>
+            ) : (
+              <>
+                <div>左键旋转 · 右键平移 · 滚轮缩放</div>
+                <div>空格 暂停 · G 时空网格 · V 地表观景 · F 自由飞船 · C 巡航 · H 隐藏界面</div>
+              </>
+            )}
           </div>
         </div>
       ) : (

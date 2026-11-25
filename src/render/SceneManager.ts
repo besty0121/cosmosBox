@@ -40,6 +40,18 @@ import { textureAtlas } from './TextureAtlas';
 
 export type GraphicsQuality = 'high' | 'fast';
 
+export const FLIGHT_GEARS = [0.25, 1.2, 5, 20, 75, 240, 750, 2400] as const;
+export const FLIGHT_GEAR_LABELS = [
+  '微距泊船',
+  '近地巡航',
+  '卫星轨道',
+  '行星巡游',
+  '内太阳系',
+  '外太阳系',
+  '星际跃迁',
+  '星系超光速',
+] as const;
+
 interface ShockwaveFX {
   mesh: THREE.Mesh;
   worldPosMeters: Vec3;
@@ -59,6 +71,7 @@ export interface SceneCallbacks {
   onCmeImpact: (event: CmeImpactEvent) => void;
   onCameraModeChange: (mode: CameraMode, targetName?: string | null) => void;
   onTelemetryTick: (fps: number) => void;
+  onFlightTelemetry?: (gearIndex: number, speedUnits: number) => void;
   onLabelsUpdate: (labels: ScreenLabel[]) => void;
 }
 
@@ -114,6 +127,18 @@ export class SceneManager {
   private tourAzimuth = 0;
   private tourOriginOffset: Vec3 = { x: 0, y: 0, z: 0 };
   private tourCurrentBodyId: string | null = null;
+
+  // 6-DOF Free-Flight Spacecraft state
+  private flightVelocity = new THREE.Vector3();
+  private flightGearIndex = 3;
+  private flightKeys = new Set<string>();
+  private isDraggingFlightLook = false;
+  private isDraggingFlightRoll = false;
+  private lastFlightPointer = new THREE.Vector2();
+  private flightThrustVec = new THREE.Vector3();
+  private flightForward = new THREE.Vector3();
+  private flightRight = new THREE.Vector3();
+  private flightUp = new THREE.Vector3();
 
   // Floating origin in SI meters (tracks focused body for zero float jitter)
   private originMeters: Vec3 = { x: 0, y: 0, z: 0 };
@@ -348,6 +373,8 @@ export class SceneManager {
   public startCinematicTour(): void {
     if (this.engine.bodies.length === 0) return;
     this.setSpawnMode(false, null, this.launchMode);
+    this.flightKeys.clear();
+    this.flightVelocity.set(0, 0, 0);
     this.cameraMode = 'cinematic';
     this.surfaceBodyId = null;
     this.controls.enabled = false;
@@ -359,19 +386,86 @@ export class SceneManager {
     this.advanceCinematicTarget(true);
   }
 
+  private getNearestVisualDistance(): { clearance: number; centerDist: number } {
+    let minClearance = Infinity;
+    let minCenterDist = Infinity;
+    for (const b of this.engine.bodies) {
+      if (!b.alive) continue;
+      const vis = this.bodyRenderer.getVisual(b.id);
+      if (!vis) continue;
+      const dCenter = this.camera.position.distanceTo(vis.renderedPos);
+      const effectiveR =
+        b.galaxyType || b.nebulaType
+          ? vis.renderedRadius * 9.5
+          : Math.max(vis.renderedRadius, 0.25);
+      const clearance = Math.max(0.05, dCenter - effectiveR);
+      if (clearance < minClearance) minClearance = clearance;
+      if (dCenter < minCenterDist) minCenterDist = dCenter;
+    }
+    return {
+      clearance: Number.isFinite(minClearance) ? minClearance : 120,
+      centerDist: Number.isFinite(minCenterDist) ? minCenterDist : 160,
+    };
+  }
+
+  public startFreeFlight(): void {
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    this.setSpawnMode(false, null, this.launchMode);
+    this.cameraMode = 'flight';
+    this.surfaceBodyId = null;
+    this.focusBodyId = null;
+    this.isDraggingSurface = false;
+    this.isDraggingFlightLook = false;
+    this.isDraggingFlightRoll = false;
+    this.flightKeys.clear();
+    this.flightVelocity.set(0, 0, 0);
+    this.controls.enabled = false;
+
+    const { clearance } = this.getNearestVisualDistance();
+    if (clearance < 12) this.flightGearIndex = 1;
+    else if (clearance < 60) this.flightGearIndex = 2;
+    else if (clearance < 220) this.flightGearIndex = 3;
+    else if (clearance < 700) this.flightGearIndex = 4;
+    else this.flightGearIndex = 5;
+
+    this.callbacks.onCameraModeChange('flight', null);
+    this.callbacks.onFlightTelemetry?.(this.flightGearIndex, 0);
+  }
+
+  public shiftFlightGear(delta: 1 | -1): void {
+    this.setFlightGear(this.flightGearIndex + delta);
+  }
+
+  public setFlightGear(index: number): void {
+    this.flightGearIndex = Math.max(0, Math.min(FLIGHT_GEARS.length - 1, Math.round(index)));
+    this.callbacks.onFlightTelemetry?.(this.flightGearIndex, this.flightVelocity.length());
+  }
+
   public exitSpecialCameraMode(notify = true): void {
     if (this.cameraMode === 'orbit') return;
-    const wasSurface = this.cameraMode === 'surface';
+    const prevMode = this.cameraMode;
     const prevBodyId = this.surfaceBodyId ?? this.tourCurrentBodyId;
     this.cameraMode = 'orbit';
     this.surfaceBodyId = null;
     this.isDraggingSurface = false;
+    this.isDraggingFlightLook = false;
+    this.isDraggingFlightRoll = false;
+    this.flightKeys.clear();
+    this.flightVelocity.set(0, 0, 0);
     this.camera.up.set(0, 1, 0);
     this.controls.enabled = true;
 
-    if (wasSurface && prevBodyId) {
+    if (prevMode === 'surface' && prevBodyId) {
       // Pull back gracefully to orbital view around the body we just lifted off from
       this.focusOnBody(prevBodyId, true);
+    } else if (prevMode === 'flight') {
+      const { centerDist } = this.getNearestVisualDistance();
+      const targetDist = THREE.MathUtils.clamp(centerDist * 0.75, 24, 280);
+      this.flightForward.set(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
+      this.controls.target.copy(this.camera.position).addScaledVector(this.flightForward, targetDist);
+      this.controls.update();
     } else {
       this.controls.target.set(0, 0, 0);
       this.controls.update();
@@ -524,6 +618,52 @@ export class SceneManager {
     this.camera.lookAt(0, 0, 0);
   }
 
+  private updateFlightCamera(dt: number): void {
+    const keys = this.flightKeys;
+    const f = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
+    const s = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
+    const u = (keys.has('KeyE') ? 1 : 0) - (keys.has('KeyQ') ? 1 : 0);
+    const braking = keys.has('KeyX');
+    const boosting = keys.has('ShiftLeft') || keys.has('ShiftRight');
+
+    const maxSpeed = FLIGHT_GEARS[this.flightGearIndex] * (boosting ? 3.0 : 1.0);
+    const hasThrust = !braking && (f !== 0 || s !== 0 || u !== 0);
+
+    if (braking) {
+      this.flightVelocity.multiplyScalar(Math.exp(-dt * 14.0));
+      if (this.flightVelocity.lengthSq() < 1e-6) this.flightVelocity.set(0, 0, 0);
+    } else if (hasThrust) {
+      this.flightForward.set(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
+      this.flightRight.set(1, 0, 0).applyQuaternion(this.camera.quaternion).normalize();
+      this.flightUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion).normalize();
+
+      this.flightThrustVec
+        .set(0, 0, 0)
+        .addScaledVector(this.flightForward, f)
+        .addScaledVector(this.flightRight, s)
+        .addScaledVector(this.flightUp, u)
+        .normalize()
+        .multiplyScalar(maxSpeed);
+
+      const accelAlpha = 1 - Math.exp(-dt * 6.0);
+      this.flightVelocity.lerp(this.flightThrustVec, accelAlpha);
+    } else {
+      this.flightVelocity.multiplyScalar(Math.exp(-dt * 4.2));
+      if (this.flightVelocity.lengthSq() < 1e-6) this.flightVelocity.set(0, 0, 0);
+    }
+
+    this.camera.position.addScaledVector(this.flightVelocity, dt);
+
+    // Floating-origin rebase keeps infinite deep-space flight free of float32 jitter
+    if (this.camera.position.length() > 8000) {
+      this.originMeters.x += this.camera.position.x * SCENE_TO_METERS;
+      this.originMeters.y += this.camera.position.y * SCENE_TO_METERS;
+      this.originMeters.z += this.camera.position.z * SCENE_TO_METERS;
+      this.camera.position.set(0, 0, 0);
+      this.focusBodyId = null;
+    }
+  }
+
   public setGraphicsQuality(quality: GraphicsQuality): void {
     this.graphicsQuality = quality;
     const width = this.container.clientWidth || window.innerWidth;
@@ -572,8 +712,12 @@ export class SceneManager {
           ? 12.5
           : body.galaxyType === 'dwarf_elliptical_diffuse'
             ? 11.0
-            : body.isGravitationalLens
-              ? 34.0
+            : body.nebulaType === 'pillars_of_creation'
+              ? 18.0
+              : body.nebulaType === 'ngc6611_cluster'
+                ? 14.0
+                : body.isGravitationalLens
+                  ? 34.0
               : body.isLensSource
                 ? 6.2
                 : body.hasRings
@@ -627,6 +771,31 @@ export class SceneManager {
       this.camera.position.copy(
         new THREE.Vector3(0.14, 0.42, 0.89).normalize().applyQuaternion(galQuat).multiplyScalar(52)
       );
+    }
+    this.camera.up.set(0, 1, 0);
+    this.controls.update();
+  }
+
+  public setPillarsViewPreset(preset: 'classic' | 'canyon' | 'muse_side' | 'tips'): void {
+    const pillars = this.engine.bodies.find((b) => b.alive && b.nebulaType === 'pillars_of_creation');
+    if (!pillars) return;
+
+    this.focusBodyId = pillars.id;
+    this.selectedBodyId = pillars.id;
+    this.originMeters = { ...pillars.position };
+
+    if (preset === 'classic') {
+      this.controls.target.set(2, -10, 0);
+      this.camera.position.set(2, -6, 268);
+    } else if (preset === 'canyon') {
+      this.controls.target.set(12, 8, 0);
+      this.camera.position.set(-14, -30, 96);
+    } else if (preset === 'muse_side') {
+      this.controls.target.set(0, -8, 4);
+      this.camera.position.set(232, 12, 28);
+    } else {
+      this.controls.target.set(30, 32, 4);
+      this.camera.position.set(14, 30, 98);
     }
     this.camera.up.set(0, 1, 0);
     this.controls.update();
@@ -1098,6 +1267,17 @@ export class SceneManager {
       return;
     }
 
+    if (this.cameraMode === 'flight') {
+      this.pointerDownScreen.set(e.clientX, e.clientY);
+      this.lastFlightPointer.set(e.clientX, e.clientY);
+      if (e.button === 0) {
+        this.isDraggingFlightLook = true;
+      } else if (e.button === 2) {
+        this.isDraggingFlightRoll = true;
+      }
+      return;
+    }
+
     if (e.button !== 0) return;
     this.pointerDownScreen.set(e.clientX, e.clientY);
 
@@ -1128,6 +1308,20 @@ export class SceneManager {
       return;
     }
 
+    if (this.cameraMode === 'flight' && (this.isDraggingFlightLook || this.isDraggingFlightRoll)) {
+      const dx = e.clientX - this.lastFlightPointer.x;
+      const dy = e.clientY - this.lastFlightPointer.y;
+      this.lastFlightPointer.set(e.clientX, e.clientY);
+      if (this.isDraggingFlightLook) {
+        this.camera.rotateOnAxis(new THREE.Vector3(0, 1, 0), -dx * 0.0038);
+        this.camera.rotateOnAxis(new THREE.Vector3(1, 0, 0), -dy * 0.0038);
+      }
+      if (this.isDraggingFlightRoll) {
+        this.camera.rotateOnAxis(new THREE.Vector3(0, 0, -1), dx * 0.005);
+      }
+      return;
+    }
+
     if (!this.spawnActive) return;
     const worldPos = this.raycastOrbitalPlane(e.clientX, e.clientY);
     this.hoverWorldMeters = worldPos;
@@ -1136,6 +1330,32 @@ export class SceneManager {
   private handlePointerUp = (e: PointerEvent): void => {
     if (this.cameraMode === 'surface') {
       this.isDraggingSurface = false;
+      return;
+    }
+
+    if (this.cameraMode === 'flight') {
+      if (e.button === 0) this.isDraggingFlightLook = false;
+      if (e.button === 2) this.isDraggingFlightRoll = false;
+      if (e.button === 0) {
+        const moveDist = Math.hypot(
+          e.clientX - this.pointerDownScreen.x,
+          e.clientY - this.pointerDownScreen.y
+        );
+        if (moveDist <= 5) {
+          const rect = this.renderer.domElement.getBoundingClientRect();
+          const ndc = new THREE.Vector2(
+            ((e.clientX - rect.left) / rect.width) * 2 - 1,
+            -((e.clientY - rect.top) / rect.height) * 2 + 1
+          );
+          this.raycaster.setFromCamera(ndc, this.camera);
+          const hits = this.raycaster.intersectObjects(this.bodyRenderer.getPickables(), false);
+          if (hits.length > 0) {
+            const bodyId = hits[0].object.userData.bodyId as string;
+            this.selectedBodyId = bodyId;
+            this.callbacks.onSelectBody(bodyId);
+          }
+        }
+      }
       return;
     }
 
@@ -1200,19 +1420,72 @@ export class SceneManager {
     }
   };
 
-  private handleWheel = (): void => {
+  private handleWheel = (e: WheelEvent): void => {
     if (this.cameraMode === 'cinematic') {
       this.exitSpecialCameraMode(true);
+      return;
+    }
+    if (this.cameraMode === 'flight') {
+      e.preventDefault();
+      if (e.deltaY < 0) this.shiftFlightGear(1);
+      else if (e.deltaY > 0) this.shiftFlightGear(-1);
+    }
+  };
+
+  private handleContextMenu = (e: MouseEvent): void => {
+    if (this.cameraMode === 'flight') {
+      e.preventDefault();
+    }
+  };
+
+  private handleFlightKeyDown = (e: KeyboardEvent): void => {
+    if (
+      e.target instanceof HTMLInputElement ||
+      e.target instanceof HTMLSelectElement ||
+      e.target instanceof HTMLTextAreaElement
+    ) {
+      return;
+    }
+    if (this.cameraMode === 'flight') {
+      this.flightKeys.add(e.code);
+    }
+  };
+
+  private handleFlightKeyUp = (e: KeyboardEvent): void => {
+    this.flightKeys.delete(e.code);
+  };
+
+  private handleWindowBlur = (): void => {
+    this.flightKeys.clear();
+    this.isDraggingFlightLook = false;
+    this.isDraggingFlightRoll = false;
+  };
+
+  private handleVisibilityChange = (): void => {
+    if (document.hidden) {
+      if (this.rafId !== 0) {
+        cancelAnimationFrame(this.rafId);
+        this.rafId = 0;
+      }
+      this.handleWindowBlur();
+    } else if (!this.disposed && this.rafId === 0) {
+      this.lastFrameTime = performance.now();
+      this.rafId = requestAnimationFrame(this.animate);
     }
   };
 
   private bindEvents(): void {
     const dom = this.renderer.domElement;
     dom.addEventListener('pointerdown', this.handlePointerDown);
-    dom.addEventListener('wheel', this.handleWheel, { passive: true });
+    dom.addEventListener('wheel', this.handleWheel, { passive: false });
+    dom.addEventListener('contextmenu', this.handleContextMenu);
     window.addEventListener('pointermove', this.handlePointerMove);
     window.addEventListener('pointerup', this.handlePointerUp);
+    window.addEventListener('keydown', this.handleFlightKeyDown);
+    window.addEventListener('keyup', this.handleFlightKeyUp);
+    window.addEventListener('blur', this.handleWindowBlur);
     window.addEventListener('resize', this.handleResize);
+    document.addEventListener('visibilitychange', this.handleVisibilityChange);
   }
 
   private animate = (): void => {
@@ -1245,11 +1518,13 @@ export class SceneManager {
       this.callbacks.onCmeImpact(ci);
     }
 
-    // 2. Camera mode update (Surface First-Person / Cinematic Auto-Tour / Free Orbit)
+    // 2. Camera mode update (Surface First-Person / Cinematic Auto-Tour / 6-DOF Free-Flight / Free Orbit)
     if (this.cameraMode === 'surface') {
       this.updateSurfaceCamera();
     } else if (this.cameraMode === 'cinematic') {
       this.updateCinematicCamera(dt);
+    } else if (this.cameraMode === 'flight') {
+      this.updateFlightCamera(dt);
     } else {
       // Orbit mode: track floating origin if locked onto a body
       const focusBody = this.engine.getBody(this.focusBodyId);
@@ -1263,12 +1538,17 @@ export class SceneManager {
       this.controls.update();
     }
 
-    // 3. Dynamic near/far clipping planes for seamless solar-system-to-surface zoom
+    // 3. Dynamic near/far clipping planes for seamless solar-system-to-surface zoom & nebula fly-through
     const camDist =
       this.cameraMode === 'surface'
         ? 0.04
-        : this.camera.position.distanceTo(this.controls.target);
-    const desiredNear = Math.max(0.0004, Math.min(2.0, camDist * 0.002));
+        : this.cameraMode === 'flight'
+          ? Math.max(0.25, Math.min(200, this.getNearestVisualDistance().clearance * 0.35))
+          : this.camera.position.distanceTo(this.controls.target);
+    const desiredNear =
+      this.cameraMode === 'flight'
+        ? Math.max(0.004, Math.min(0.5, camDist * 0.04))
+        : Math.max(0.0004, Math.min(2.0, camDist * 0.002));
     const desiredFar = Math.max(60000, camDist * 250);
     if (Math.abs(this.camera.near - desiredNear) / this.camera.near > 0.15) {
       this.camera.near = desiredNear;
@@ -1288,7 +1568,8 @@ export class SceneManager {
       this.showTrails,
       this.cameraMode === 'orbit' ? this.selectedBodyId : null,
       this.elapsedTime,
-      this.engine.cmeWaves
+      this.engine.cmeWaves,
+      this.graphicsQuality
     );
     this.debrisRenderer.sync(this.engine.debris.particles, this.originMeters);
     this.galaxyRenderer.sync(this.engine.galaxy.stars, this.originMeters);
@@ -1363,9 +1644,13 @@ export class SceneManager {
                 ? '旋涡星系 SA(s)b'
                 : b.galaxyType
                   ? '矮椭圆伴星系'
-                  : b.category === 'black_hole'
-                    ? '黑洞'
-                    : `${Math.round(b.temperature)} K`,
+                  : b.nebulaType === 'pillars_of_creation'
+                    ? '冷分子云 · 创生之柱'
+                    : b.nebulaType === 'ngc6611_cluster'
+                      ? 'O/B 幼年电离星团'
+                      : b.category === 'black_hole'
+                        ? '黑洞'
+                        : `${Math.round(b.temperature)} K`,
           });
         }
         this.callbacks.onLabelsUpdate(projected);
@@ -1382,6 +1667,9 @@ export class SceneManager {
       this.fpsFrames = 0;
       this.telemetryTimer = 0;
       this.callbacks.onTelemetryTick(fps);
+      if (this.cameraMode === 'flight') {
+        this.callbacks.onFlightTelemetry?.(this.flightGearIndex, this.flightVelocity.length());
+      }
     }
   };
 
@@ -1391,9 +1679,14 @@ export class SceneManager {
     const dom = this.renderer.domElement;
     dom.removeEventListener('pointerdown', this.handlePointerDown);
     dom.removeEventListener('wheel', this.handleWheel);
+    dom.removeEventListener('contextmenu', this.handleContextMenu);
     window.removeEventListener('pointermove', this.handlePointerMove);
     window.removeEventListener('pointerup', this.handlePointerUp);
+    window.removeEventListener('keydown', this.handleFlightKeyDown);
+    window.removeEventListener('keyup', this.handleFlightKeyUp);
+    window.removeEventListener('blur', this.handleWindowBlur);
     window.removeEventListener('resize', this.handleResize);
+    document.removeEventListener('visibilitychange', this.handleVisibilityChange);
     this.bodyRenderer.disposeAll();
     this.debrisRenderer.dispose();
     this.galaxyRenderer.dispose();

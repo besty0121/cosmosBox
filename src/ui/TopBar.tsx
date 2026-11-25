@@ -55,6 +55,7 @@ export function TopBar() {
   const setScaleMode = useCosmosStore((s) => s.setScaleMode);
   const toggleGraphicsQuality = useCosmosStore((s) => s.toggleGraphicsQuality);
   const toggleCinematicTour = useCosmosStore((s) => s.toggleCinematicTour);
+  const toggleFreeFlight = useCosmosStore((s) => s.toggleFreeFlight);
   const toggleTrails = useCosmosStore((s) => s.toggleTrails);
   const toggleGravityGrid = useCosmosStore((s) => s.toggleGravityGrid);
   const toggleHabitableZone = useCosmosStore((s) => s.toggleHabitableZone);
@@ -93,7 +94,10 @@ export function TopBar() {
         <select
           className="hud-select"
           value={scenarioId}
-          onChange={(e) => loadScenario(e.target.value)}
+          onChange={(e) => {
+            loadScenario(e.target.value);
+            e.currentTarget.blur();
+          }}
           title="切换预设宇宙场景"
         >
           {SCENARIOS.map((sc) => (
@@ -143,6 +147,15 @@ export function TopBar() {
         >
           <Film size={14} />
           {cameraMode === 'cinematic' ? '巡航中' : '巡航'}
+        </button>
+
+        <button
+          className={`hud-btn ${cameraMode === 'flight' ? 'active' : ''}`}
+          onClick={toggleFreeFlight}
+          title="进入/退出 6 自由度自由飞船巡航模式 (F)"
+        >
+          <Navigation size={14} />
+          {cameraMode === 'flight' ? '飞船中' : '飞船'}
         </button>
 
         <button

@@ -35,7 +35,8 @@ export function computeAccelerations(bodies: CelestialBody[]): number {
       if (
         (bi.isGravitationalLens && bj.isLensSource) ||
         (bj.isGravitationalLens && bi.isLensSource) ||
-        (bi.galaxyType && bj.galaxyType)
+        (bi.galaxyType && bj.galaxyType) ||
+        (bi.nebulaType && bj.nebulaType)
       ) {
         continue;
       }

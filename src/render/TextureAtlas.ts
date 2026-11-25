@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { CelestialBody } from '../types/cosmos';
 import { AndromedaDiskMaps, bakeAndromedaDiskMaps } from './AndromedaBaker';
+import { PillarsVolumeMaps, bakePillarsVolumeMaps } from './PillarsBaker';
 
 export interface PlanetTextures {
   earthDay: THREE.Texture;
@@ -25,6 +26,7 @@ class TextureAtlasManager {
   private textures: PlanetTextures | null = null;
   private renderer: THREE.WebGLRenderer | null = null;
   private andromedaMaps: AndromedaDiskMaps | null = null;
+  private pillarsMaps: PillarsVolumeMaps | null = null;
   private loader = new THREE.TextureLoader();
 
   public init(renderer: THREE.WebGLRenderer): PlanetTextures {
@@ -80,6 +82,13 @@ class TextureAtlasManager {
       this.andromedaMaps = bakeAndromedaDiskMaps(this.renderer, 2048);
     }
     return this.andromedaMaps;
+  }
+
+  public getPillarsMaps(): PillarsVolumeMaps | null {
+    if (!this.pillarsMaps && this.renderer) {
+      this.pillarsMaps = bakePillarsVolumeMaps(this.renderer);
+    }
+    return this.pillarsMaps;
   }
 
   /**

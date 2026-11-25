@@ -753,6 +753,12 @@ input[type='range'].cosmos-slider::-webkit-slider-thumb {
   background: transparent;
 }
 
+@media (max-width: 1640px) {
+  .camera-mode-banner {
+    top: 116px;
+  }
+}
+
 @media (max-width: 960px) {
   .controls-hint {
     display: none;

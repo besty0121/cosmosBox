@@ -1776,6 +1776,70 @@ function createAndromedaGalaxy(): CelestialBody[] {
   return [m31, m32, m110];
 }
 
+function createPillarsOfCreation(): CelestialBody[] {
+  const pillars: CelestialBody = {
+    id: nextBodyId('pillars'),
+    name: '创生之柱 (鹰状星云 M16)',
+    category: 'rocky',
+    nebulaType: 'pillars_of_creation',
+    nebulaSpectrumMode: 'jwst_nircam',
+    nebulaIrPenetration: 0.92,
+    nebulaDensity: 1.0,
+    mass: 200 * M_SUN,
+    radius: 2.2 * LY,
+    position: { x: 0, y: 0, z: 0 },
+    velocity: { x: 0, y: 0, z: 0 },
+    acceleration: { x: 0, y: 0, z: 0 },
+    temperature: 45,
+    luminosity: 0,
+    albedo: 0,
+    greenhouse: 0,
+    waterFraction: 0,
+    atmosphereDensity: 0,
+    impactHeat: 0,
+    rotationPeriod: 1000 * DAY,
+    rotationAngle: 0,
+    axialTilt: 0,
+    color: '#d99864',
+    secondaryColor: '#3f7696',
+    atmosphereColor: '#000000',
+    seed: 1601,
+    trail: [],
+    alive: true,
+  };
+
+  const ngc6611: CelestialBody = {
+    id: nextBodyId('ngc6611'),
+    name: 'NGC 6611 幼年大质量星团',
+    category: 'rocky',
+    nebulaType: 'ngc6611_cluster',
+    mass: 1800 * M_SUN,
+    radius: 0.9 * LY,
+    position: { x: -0.48 * AU, y: 0.72 * AU, z: 0.30 * AU },
+    velocity: { x: 0, y: 0, z: 0 },
+    acceleration: { x: 0, y: 0, z: 0 },
+    temperature: 36000,
+    luminosity: 0,
+    albedo: 0,
+    greenhouse: 0,
+    waterFraction: 0,
+    atmosphereDensity: 0,
+    impactHeat: 0,
+    rotationPeriod: 1000 * DAY,
+    rotationAngle: 0,
+    axialTilt: 0,
+    color: '#b8d8ff',
+    secondaryColor: '#6fa9ff',
+    atmosphereColor: '#000000',
+    parentId: pillars.id,
+    seed: 6611,
+    trail: [],
+    alive: true,
+  };
+
+  return [pillars, ngc6611];
+}
+
 function createEmptySandbox(): CelestialBody[] {
   return [];
 }
@@ -1819,6 +1883,16 @@ export const SCENARIOS: ScenarioDefinition[] = [
     defaultFocusBodyName: '仙女座星系 (M31)',
     defaultCameraAngles: { azimuthDeg: 0, elevationDeg: 0 },
     createBodies: createAndromedaGalaxy,
+  },
+  {
+    id: 'pillars_of_creation',
+    name: '🏛️ 创生之柱（鹰状星云 M16）',
+    description: '结合哈勃可见光、詹姆斯·韦伯 NIRCam/MIRI 双红外波段及 ESO MUSE 3D 光谱重构：高约 5 光年的三座冷分子尘埃柱被 NGC 6611 幼年 O/B 星团紫外电离雕刻，支持连续红外尘埃穿透切换、柱顶蒸发气态球与自由飞船穿柱飞行。',
+    defaultTimeScale: 0.8 * DAY,
+    defaultCameraDistanceAU: 1.68,
+    defaultFocusBodyName: '创生之柱 (鹰状星云 M16)',
+    defaultCameraAngles: { azimuthDeg: 0, elevationDeg: 0 },
+    createBodies: createPillarsOfCreation,
   },
   {
     id: 'earth_aurora',

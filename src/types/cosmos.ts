@@ -24,9 +24,13 @@ export type GalaxyVisualType =
 
 export type GalaxySpectrumMode = 'optical' | 'infrared' | 'ultraviolet';
 
+export type NebulaVisualType = 'pillars_of_creation' | 'ngc6611_cluster';
+
+export type NebulaSpectrumMode = 'hst_optical' | 'jwst_nircam' | 'jwst_miri';
+
 export type LaunchMode = 'orbit' | 'slingshot' | 'stationary';
 
-export type CameraMode = 'orbit' | 'surface' | 'cinematic';
+export type CameraMode = 'orbit' | 'surface' | 'cinematic' | 'flight';
 
 export interface CelestialBody {
   id: string;
@@ -90,6 +94,14 @@ export interface CelestialBody {
   galaxyDustOpacity?: number;
   /** Multi-wavelength observation filter for galaxy visualization */
   galaxySpectrumMode?: GalaxySpectrumMode;
+  /** Marks a 3D volumetric star-forming nebula or ionizing cluster (Pillars of Creation / NGC 6611) */
+  nebulaType?: NebulaVisualType;
+  /** Multi-telescope imaging mode (HST Optical / JWST NIRCam / JWST MIRI) */
+  nebulaSpectrumMode?: NebulaSpectrumMode;
+  /** Continuous infrared dust penetration factor [0 = opaque optical .. 1 = deep IR] */
+  nebulaIrPenetration?: number;
+  /** Volumetric dust column density multiplier [0.4..1.8] */
+  nebulaDensity?: number;
 
   // Rotation & visual appearance
   /** Sidereal rotation period in seconds */
@@ -311,6 +323,10 @@ export interface BodySnapshot {
   galaxyType?: GalaxyVisualType;
   galaxyDustOpacity?: number;
   galaxySpectrumMode?: GalaxySpectrumMode;
+  nebulaType?: NebulaVisualType;
+  nebulaSpectrumMode?: NebulaSpectrumMode;
+  nebulaIrPenetration?: number;
+  nebulaDensity?: number;
   jupiterTorus?: boolean;
   volcanicIo?: boolean;
   rotationPeriod: number;

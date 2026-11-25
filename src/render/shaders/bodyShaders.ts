@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 import { CelestialBody } from '../../types/cosmos';
 import { AndromedaDiskMaps } from '../AndromedaBaker';
+import { PillarsVolumeMaps } from '../PillarsBaker';
 import { PlanetTextures } from '../TextureAtlas';
+import { GLSL_NOISE_LIB } from './noise';
 
 export const MAX_STAR_LIGHTS = 4;
 export const MAX_OCCLUDERS = 4;
@@ -3117,6 +3119,455 @@ export function createDwarfEllipticalStarsMaterial(): THREE.ShaderMaterial {
         float core = exp(-r2 * 44.0) + exp(-r2 * 14.0) * 0.35;
         float a = clamp(core * (1.0 - smoothstep(0.14, 0.25, r2)) * 0.78 * vReveal, 0.0, 0.90);
         if (a < 0.005) discard;
+        gl_FragColor = vec4(vCol, a);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+}
+
+// ============================================================================
+// 13. EAGLE NEBULA (M16) · 3D VOLUMETRIC PILLARS OF CREATION & NGC 6611
+// ============================================================================
+
+export function createPillarsVolumeMaterial(maps: PillarsVolumeMaps): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uInvModelMatrix: { value: new THREE.Matrix4() },
+      uSpectrumMode: { value: 1.0 }, // 0 = HST Optical, 1 = JWST NIRCam, 2 = JWST MIRI
+      uIrPenetration: { value: 0.92 },
+      uDensityScale: { value: 1.0 },
+      uMaxSteps: { value: 24.0 },
+      uVolumeAtlas: { value: maps.volumeAtlas },
+      uCloudNoise: { value: maps.cloudNoiseMap },
+    },
+    vertexShader: /* glsl */ `
+      uniform mat4 uInvModelMatrix;
+      varying vec3 vLocalPos;
+      varying vec3 vLocalCamPos;
+
+      void main() {
+        vLocalPos = position;
+        vLocalCamPos = (uInvModelMatrix * vec4(cameraPosition, 1.0)).xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform float uTime;
+      uniform float uSpectrumMode;
+      uniform float uIrPenetration;
+      uniform float uDensityScale;
+      uniform float uMaxSteps;
+      uniform sampler2D uVolumeAtlas;
+      uniform sampler2D uCloudNoise;
+
+      varying vec3 vLocalPos;
+      varying vec3 vLocalCamPos;
+
+      const vec3 B_MIN = vec3(-7.4, -8.2, -4.0);
+      const vec3 B_MAX = vec3(7.4, 7.0, 4.4);
+      const vec3 INV_BSIZE = 1.0 / (B_MAX - B_MIN);
+
+      // Single-atlas trilinear 3D lookup (continuous SDF + UV trans + vapor + HH, zero 3D Simplex math!)
+      vec4 sampleAtlas3D(sampler2D atlas, vec3 uvw) {
+        vec3 c = clamp(uvw, 0.0, 1.0);
+        const float TILE_RES = 128.0;
+        vec2 tileUV = (c.xy * (TILE_RES - 1.0) + 0.5) / TILE_RES;
+        float zPos = c.z * 63.0;
+        float z0 = floor(zPos);
+        float z1 = min(z0 + 1.0, 63.0);
+        float zf = zPos - z0;
+        vec2 t0 = vec2(mod(z0, 8.0), floor(z0 / 8.0));
+        vec2 t1 = vec2(mod(z1, 8.0), floor(z1 / 8.0));
+        vec4 s0 = texture2D(atlas, (t0 + tileUV) / 8.0);
+        vec4 s1 = texture2D(atlas, (t1 + tileUV) / 8.0);
+        return mix(s0, s1, zf);
+      }
+
+      void main() {
+        vec3 ro = vLocalCamPos;
+        vec3 toFrag = vLocalPos - vLocalCamPos;
+        float distToFrag = length(toFrag);
+        if (distToFrag < 0.001) discard;
+        vec3 rd = toFrag / distToFrag;
+
+        // Analytical Ray-AABB intersection (works cleanly outside & inside canyon!)
+        vec3 safeRd = vec3(
+          abs(rd.x) > 1e-5 ? rd.x : 1e-5,
+          abs(rd.y) > 1e-5 ? rd.y : 1e-5,
+          abs(rd.z) > 1e-5 ? rd.z : 1e-5
+        );
+        vec3 invRd = 1.0 / safeRd;
+        vec3 tMinV = (B_MIN - ro) * invRd;
+        vec3 tMaxV = (B_MAX - ro) * invRd;
+        vec3 tSmall = min(tMinV, tMaxV);
+        vec3 tBig = max(tMinV, tMaxV);
+        float tNear = max(max(tSmall.x, tSmall.y), tSmall.z);
+        float tFar = min(min(tBig.x, tBig.y), tBig.z);
+        float t0 = max(0.0, tNear);
+        float t1 = min(distToFrag, tFar);
+        if (t1 <= t0) discard;
+
+        bool isMiri = uSpectrumMode >= 1.5;
+        float ir = isMiri ? 0.55 : clamp(uIrPenetration, 0.0, 1.0);
+        float stepInside = mix(0.28, 0.42, clamp((24.0 - uMaxSteps) / 8.0, 0.0, 1.0));
+
+        float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+        float t = t0 + jitter * 0.22;
+
+        vec3 T = vec3(1.0);
+        vec3 accum = vec3(0.0);
+
+        for (int i = 0; i < 24; i++) {
+          if (float(i) >= uMaxSteps || t >= t1 || max(T.r, max(T.g, T.b)) < 0.018) break;
+          vec3 p = ro + rd * t;
+          vec3 uvw = (p - B_MIN) * INV_BSIZE;
+
+          vec4 vol = sampleAtlas3D(uVolumeAtlas, uvw);
+          float baseSdf = (vol.r - 0.375) * 4.0;
+          float vapor = vol.b;
+
+          if (baseSdf > 0.38 && vapor < 0.015) {
+            t += clamp(baseSdf * 0.72, 0.28, 1.65);
+            continue;
+          }
+
+          float ds = min(stepInside, t1 - t);
+          if (ds <= 1e-4) break;
+
+          // Crisp first-edition filigree modulation
+          vec4 detA = texture2D(uCloudNoise, p.xy * 0.22 + vec2(p.z * 0.16, -p.z * 0.12 + uTime * 0.002));
+          vec4 detB = texture2D(uCloudNoise, vec2(p.x + p.z, p.y - p.z) * 0.38 + vec2(0.17, 0.43));
+          float microFil = (detA.b - 0.5) * 0.22 + (detB.g - 0.5) * 0.14;
+          float sdf = baseSdf - microFil;
+
+          float radContain = 1.0 - smoothstep(9.0, 12.2, length(p));
+          float baseFade = smoothstep(-7.6, -4.6, p.y);
+          float shell = 1.0 - smoothstep(-0.24, 0.18, sdf);
+          float dens = shell * mix(0.54, 1.06, detA.g * 0.65 + detB.r * 0.35) * radContain * baseFade;
+          vapor *= mix(0.75, 1.18, detB.r);
+          float hhWisp = vol.a * (1.0 - smoothstep(-0.18, 0.24, sdf));
+
+          if (dens > 0.008 || vapor > 0.01 || hhWisp > 0.01) {
+            float uvTrans = vol.g;
+            float surfMask = (1.0 - smoothstep(0.0, 0.26, abs(sdf + 0.04))) * radContain * baseFade;
+            float surfaceRim = surfMask * pow(max(1e-4, uvTrans), 0.78);
+            float forwardMask = clamp(0.62 + 0.38 * smoothstep(-2.5, 2.8, p.z), 0.28, 1.05);
+
+            vec3 emis = vec3(0.0);
+            vec3 ext = vec3(0.0);
+
+            if (isMiri) {
+              vec3 miriCore = mix(vec3(0.045, 0.075, 0.145), vec3(0.22, 0.34, 0.48), uvTrans * forwardMask);
+              vec3 miriRim = vec3(0.60, 0.72, 0.90) * surfaceRim * 0.44;
+              vec3 miriMist = vec3(0.26, 0.40, 0.62) * vapor * (0.30 + 0.60 * uvTrans) * 0.22;
+              emis = miriCore * dens * 0.62 * uDensityScale + miriRim + miriMist + vec3(0.85, 0.20, 0.08) * hhWisp * 0.24;
+              ext = vec3(1.30, 1.40, 1.55) * dens * 1.48 * uDensityScale;
+            } else {
+              vec3 hstBody = mix(vec3(0.022, 0.010, 0.005), vec3(0.19, 0.09, 0.034), uvTrans * forwardMask);
+              vec3 hstRim = mix(vec3(0.22, 0.85, 0.90), vec3(1.38, 1.02, 0.34), uvTrans) * surfaceRim * 0.58;
+              vec3 hstVapor = vec3(0.14, 0.60, 0.82) * vapor * (0.30 + 0.70 * uvTrans) * 0.42;
+              vec3 hstEmis = hstBody * dens * 0.52 + hstRim + hstVapor;
+              vec3 hstExt = vec3(2.15, 2.80, 3.45) * dens * 1.68 * uDensityScale;
+
+              vec3 nirBody = mix(vec3(0.055, 0.015, 0.004), vec3(0.46, 0.17, 0.032), uvTrans * forwardMask);
+              vec3 nirRim = mix(vec3(0.16, 0.42, 0.95), vec3(0.88, 0.42, 0.08), uvTrans) * surfaceRim * 0.64;
+              vec3 nirVapor = vec3(0.14, 0.44, 1.15) * vapor * (0.35 + 0.65 * uvTrans) * 0.42;
+              vec3 nirHH = vec3(1.95, 0.24, 0.03) * hhWisp * 1.55;
+              vec3 nirEmis = nirBody * dens * 0.56 + nirRim + nirVapor + nirHH;
+              vec3 nirExt = vec3(0.85, 1.52, 2.38) * dens * 1.28 * uDensityScale;
+
+              emis = mix(hstEmis, nirEmis, ir);
+              ext = mix(hstExt, nirExt, ir);
+            }
+
+            vec3 stepT = exp(-ext * ds);
+            vec3 stepInteg = mix(vec3(ds), (1.0 - stepT) / max(ext, vec3(1e-4)), step(vec3(1e-4), ext));
+            accum += T * emis * stepInteg;
+            T *= stepT;
+          }
+          t += ds;
+        }
+
+        // First-edition Narkowicz ACES curve
+        accum *= 1.04;
+        accum = (accum * (2.51 * accum + 0.03)) / (accum * (2.43 * accum + 0.59) + 0.14);
+        accum = clamp(accum, vec3(0.0), vec3(0.95));
+
+        float opacity = clamp(1.0 - dot(T, vec3(0.30, 0.52, 0.18)), 0.0, 0.96);
+        float lumAlpha = clamp(max(accum.r, max(accum.g, accum.b)) * 0.72, 0.0, 0.90);
+        float finalAlpha = max(opacity, lumAlpha);
+        if (finalAlpha < 0.004) discard;
+
+        gl_FragColor = vec4(accum, finalAlpha);
+      }
+    `,
+    side: THREE.BackSide,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.CustomBlending,
+    blendEquation: THREE.AddEquation,
+    blendSrc: THREE.OneFactor,
+    blendDst: THREE.OneMinusSrcAlphaFactor,
+    blendEquationAlpha: THREE.AddEquation,
+    blendSrcAlpha: THREE.ZeroFactor,
+    blendDstAlpha: THREE.OneFactor,
+  });
+}
+
+/** First-edition soft volumetric backlit M16 canopy wash behind the Pillars */
+export function createPillarsBackdropMaterial(cloudNoiseMap: THREE.Texture): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uInvModelMatrix: { value: new THREE.Matrix4() },
+      uSpectrumMode: { value: 1.0 },
+      uIrPenetration: { value: 0.92 },
+      uCloudNoise: { value: cloudNoiseMap },
+    },
+    vertexShader: /* glsl */ `
+      uniform mat4 uInvModelMatrix;
+      varying vec3 vLocalPos;
+      varying vec3 vLocalCamPos;
+
+      void main() {
+        vLocalPos = position;
+        vLocalCamPos = (uInvModelMatrix * vec4(cameraPosition, 1.0)).xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform float uSpectrumMode;
+      uniform float uIrPenetration;
+      uniform sampler2D uCloudNoise;
+
+      varying vec3 vLocalPos;
+      varying vec3 vLocalCamPos;
+
+      void main() {
+        vec3 ro = vLocalCamPos;
+        vec3 toFrag = vLocalPos - vLocalCamPos;
+        float distToFrag = length(toFrag);
+        if (distToFrag < 0.001) discard;
+        vec3 rd = toFrag / distToFrag;
+
+        float b = dot(ro, rd);
+        vec3 pPlane = ro - rd * b;
+        float rImpact = length(pPlane);
+        float radFade = pow(max(1e-4, 1.0 - smoothstep(3.6, 12.1, rImpact)), 1.65);
+        if (radFade <= 0.002) discard;
+
+        vec2 uvCloud = pPlane.xy * 0.065 + vec2(pPlane.z * 0.03, -pPlane.z * 0.02);
+        float bgCloud = texture2D(uCloudNoise, uvCloud).r;
+
+        bool isMiri = uSpectrumMode >= 1.5;
+        float ir = isMiri ? 0.55 : clamp(uIrPenetration, 0.0, 1.0);
+
+        vec3 backCanopy = vec3(0.0);
+        if (isMiri) {
+          float vArch = smoothstep(-2.4, 4.4, pPlane.y - abs(pPlane.x) * 0.42);
+          vec3 miriBgDark = vec3(0.015, 0.032, 0.088) * 0.18;
+          vec3 miriBgWarm = vec3(0.56, 0.15, 0.018) * (0.38 + 0.62 * bgCloud) * 0.48;
+          backCanopy = mix(miriBgDark, miriBgWarm, vArch) * radFade;
+        } else {
+          float upperRight = smoothstep(-4.8, 4.8, pPlane.y + pPlane.x * 0.52);
+          vec3 hstBg = mix(vec3(0.18, 0.15, 0.042), vec3(0.035, 0.22, 0.31), upperRight) * (0.35 + 0.65 * bgCloud) * 0.30;
+          vec3 nirBg = mix(vec3(0.08, 0.038, 0.014), vec3(0.016, 0.052, 0.145), upperRight) * (0.30 + 0.70 * bgCloud) * 0.16;
+          backCanopy = mix(hstBg, nirBg, ir) * radFade;
+        }
+
+        backCanopy *= 1.04;
+        backCanopy = (backCanopy * (2.51 * backCanopy + 0.03)) / (backCanopy * (2.43 * backCanopy + 0.59) + 0.14);
+        backCanopy = clamp(backCanopy, vec3(0.0), vec3(0.95));
+
+        float a = clamp(max(backCanopy.r, max(backCanopy.g, backCanopy.b)) * 0.85, 0.0, 0.88);
+        if (a < 0.004) discard;
+        gl_FragColor = vec4(backCanopy, a);
+      }
+    `,
+    side: THREE.BackSide,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.CustomBlending,
+    blendEquation: THREE.AddEquation,
+    blendSrc: THREE.OneFactor,
+    blendDst: THREE.OneMinusSrcAlphaFactor,
+    blendEquationAlpha: THREE.AddEquation,
+    blendSrcAlpha: THREE.ZeroFactor,
+    blendDstAlpha: THREE.OneFactor,
+  });
+}
+
+export function createPillarsStarsMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uSpectrumMode: { value: 1.0 },
+      uIrPenetration: { value: 0.92 },
+      uPixelRatio: { value: 1.25 },
+    },
+    vertexShader: /* glsl */ `
+      attribute vec3 aStarCol;
+      attribute float aStarSize;
+      attribute float aStarPop; // 0 = embedded protostar inside pillar, 1 = HH shock knot, 2 = Eagle field/NGC6611 star
+
+      uniform float uTime;
+      uniform float uSpectrumMode;
+      uniform float uIrPenetration;
+      uniform float uPixelRatio;
+
+      varying vec3 vCol;
+      varying float vAlpha;
+      varying float vSpike;
+      varying float vSpikeHex;
+
+      void main() {
+        vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+        float camDist = max(6.0, -mvPos.z);
+
+        // Smooth far fade eliminates zoomed-out HDR star pile-up and square bloom boxes
+        float farFade = 1.0 - smoothstep(320.0, 680.0, camDist);
+        if (farFade <= 0.005) {
+          vCol = vec3(0.0);
+          vAlpha = 0.0;
+          vSpike = 0.0;
+          vSpikeHex = 0.0;
+          gl_PointSize = 0.0;
+          gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+          return;
+        }
+        float fluxScale = clamp(240.0 / camDist, 0.24, 1.0);
+
+        bool isMiri = uSpectrumMode >= 1.5;
+        float ir = isMiri ? 0.55 : clamp(uIrPenetration, 0.0, 1.0);
+
+        vCol = aStarCol;
+
+        float popAlpha = 0.72;
+        if (aStarPop < 0.5) {
+          // Embedded ruby/gold newborn protostars pierce through dust as NIRCam IR rises
+          float irReveal = smoothstep(0.14, 0.86, ir);
+          popAlpha = isMiri ? 0.14 : mix(0.02, 0.94, irReveal);
+        } else if (aStarPop < 1.5) {
+          // Herbig-Haro crimson jet knots
+          popAlpha = isMiri ? 0.34 : mix(0.08, 0.88, ir);
+        } else {
+          // Field / NGC 6611 stars: vibrant in HST/NIRCam, heavily suppressed in dusty MIRI
+          popAlpha = isMiri ? 0.09 : mix(0.68, 0.92, ir);
+        }
+
+        // Gentle scintillation pulse on newborn protostars
+        float twinkle = 0.92 + 0.08 * sin(uTime * 1.4 + position.x * 2.1 + position.y * 3.3);
+        vAlpha = popAlpha * twinkle * farFade * fluxScale;
+        vCol = min(vCol, vec3(1.10));
+
+        float isHero = clamp((aStarSize - 1.95) * 0.65, 0.0, 1.0);
+        vSpike = isMiri ? isHero * 0.25 : isHero;
+        vSpikeHex = isMiri ? 1.0 : smoothstep(0.25, 0.75, ir); // 4-point Hubble spikes <-> 6-point hexagonal JWST spikes!
+
+        gl_Position = projectionMatrix * mvPos;
+        float starSz = aStarPop < 0.5 ? max(aStarSize, 1.6) : aStarSize;
+        float basePt = starSz * (225.0 / camDist) * uPixelRatio;
+        float maxPt = vSpike > 0.05 ? mix(4.6, 24.0, vSpike) : 3.6;
+        gl_PointSize = clamp(basePt + vSpike * 8.5, 1.35, maxPt);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      varying vec3 vCol;
+      varying float vAlpha;
+      varying float vSpike;
+      varying float vSpikeHex;
+
+      void main() {
+        vec2 p = gl_PointCoord - 0.5;
+        float r2 = dot(p, p);
+        if (vSpike <= 0.05 && r2 > 0.25) discard;
+        if (max(abs(p.x), abs(p.y)) > 0.495) discard;
+
+        float core = exp(-r2 * 56.0) + exp(-r2 * 16.0) * 0.30;
+        float disc = core * (1.0 - smoothstep(0.14, 0.25, r2));
+
+        float spikes = 0.0;
+        if (vSpike > 0.05) {
+          float taper = 1.0 - smoothstep(0.18, 0.48, length(p));
+          // Hubble 4-spike X orientation (~45 deg)
+          vec2 p45 = vec2(p.x * 0.7071 - p.y * 0.7071, p.x * 0.7071 + p.y * 0.7071);
+          float sp4 = exp(-abs(p45.y) * 42.0) * exp(-abs(p45.x) * 7.2)
+                    + exp(-abs(p45.x) * 42.0) * exp(-abs(p45.y) * 7.2);
+
+          // JWST 6-spike hexagonal orientation (vertical 90 deg + +/-30 deg)
+          vec2 dA = vec2(p.x, p.y);
+          vec2 dB = vec2(p.x * 0.5 + p.y * 0.866025, -p.x * 0.866025 + p.y * 0.5);
+          vec2 dC = vec2(p.x * 0.5 - p.y * 0.866025,  p.x * 0.866025 + p.y * 0.5);
+          float sp6 = exp(-abs(dA.x) * 44.0) * exp(-abs(dA.y) * 6.5)
+                    + exp(-abs(dB.x) * 44.0) * exp(-abs(dB.y) * 6.5)
+                    + exp(-abs(dC.x) * 44.0) * exp(-abs(dC.y) * 6.5);
+
+          spikes = mix(sp4, sp6, vSpikeHex) * taper * vSpike * 0.92;
+        }
+
+        float a = clamp((disc + spikes) * vAlpha, 0.0, 0.68);
+        if (a < 0.004) discard;
+        gl_FragColor = vec4(vCol, a);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+}
+
+export function createNgc6611ClusterMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uPixelRatio: { value: 1.25 },
+    },
+    vertexShader: /* glsl */ `
+      attribute vec3 aStarCol;
+      attribute float aStarSize;
+      uniform float uPixelRatio;
+      varying vec3 vCol;
+      varying float vSpike;
+      varying float vFarFade;
+
+      void main() {
+        vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+        float camDist = max(6.0, -mvPos.z);
+        vFarFade = 1.0 - smoothstep(420.0, 900.0, camDist);
+        vCol = min(aStarCol, vec3(1.10));
+        vSpike = clamp((aStarSize - 1.7) * 0.65, 0.0, 1.0);
+        gl_Position = projectionMatrix * mvPos;
+        gl_PointSize = clamp(aStarSize * (210.0 / camDist) * uPixelRatio + vSpike * 4.5, 1.0, 12.0);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      varying vec3 vCol;
+      varying float vSpike;
+      varying float vFarFade;
+
+      void main() {
+        if (vFarFade < 0.01) discard;
+        vec2 p = gl_PointCoord - 0.5;
+        float r2 = dot(p, p);
+        if (vSpike <= 0.05 && r2 > 0.25) discard;
+        float core = exp(-r2 * 52.0) + exp(-r2 * 15.0) * 0.32;
+        float disc = core * (1.0 - smoothstep(0.14, 0.25, r2));
+
+        vec2 dA = p;
+        vec2 dB = vec2(p.x * 0.5 + p.y * 0.866025, -p.x * 0.866025 + p.y * 0.5);
+        vec2 dC = vec2(p.x * 0.5 - p.y * 0.866025,  p.x * 0.866025 + p.y * 0.5);
+        float taper = 1.0 - smoothstep(0.18, 0.48, length(p));
+        float sp6 = (
+          exp(-abs(dA.x) * 44.0) * exp(-abs(dA.y) * 6.5)
+          + exp(-abs(dB.x) * 44.0) * exp(-abs(dB.y) * 6.5)
+          + exp(-abs(dC.x) * 44.0) * exp(-abs(dC.y) * 6.5)
+        ) * taper * vSpike * 0.55;
+
+        float a = clamp((disc + sp6) * 0.72 * vFarFade, 0.0, 0.68);
+        if (a < 0.004) discard;
         gl_FragColor = vec4(vCol, a);
       }
     `,

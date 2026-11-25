@@ -77,6 +77,8 @@ export function InspectorPanel() {
   const triggerBodySupernova = useCosmosStore((s) => s.triggerBodySupernova);
   const launchSolarCME = useCosmosStore((s) => s.launchSolarCME);
   const setAndromedaViewPreset = useCosmosStore((s) => s.setAndromedaViewPreset);
+  const setPillarsViewPreset = useCosmosStore((s) => s.setPillarsViewPreset);
+  const toggleFreeFlight = useCosmosStore((s) => s.toggleFreeFlight);
 
   const body = selectedBodyId ? bodies.find((b) => b.id === selectedBodyId) ?? null : null;
 
@@ -791,6 +793,206 @@ export function InspectorPanel() {
                   onClick={() => setAndromedaViewPreset('earth')}
                 >
                   🔭 返回仙女座全貌 (77° 地球视角)
+                </button>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* Pillars of Creation (M16) & NGC 6611 Ionizing Cluster Observatory */}
+        {body.nebulaType && (() => {
+          const isPillars = body.nebulaType === 'pillars_of_creation';
+          const specMode = body.nebulaSpectrumMode ?? 'jwst_nircam';
+          const irVal =
+            body.nebulaIrPenetration ?? (specMode === 'hst_optical' ? 0.0 : 0.92);
+          const densityVal = body.nebulaDensity ?? 1.0;
+
+          return (
+            <div className="control-section">
+              <div className="section-title">
+                {isPillars ? '鹰状星云 · 创生之柱观测台' : 'NGC 6611 幼年星团观测档案'}
+              </div>
+
+              <div className="stat-grid" style={{ marginBottom: 8 }}>
+                {isPillars ? (
+                  <>
+                    <div className="stat-card" style={{ gridColumn: '1 / -1' }}>
+                      <div className="stat-label">天体尺度与方位</div>
+                      <div className="stat-value mono" style={{ fontSize: 11.5 }}>
+                        距地球约 6,500 光年 (M16 巨蛇座) · 主柱跨高约 4–5 光年
+                      </div>
+                    </div>
+                    <div className="stat-card" style={{ gridColumn: '1 / -1' }}>
+                      <div className="stat-label">光致蒸发与恒星孕育</div>
+                      <div className="stat-value" style={{ fontSize: 11.5, lineHeight: 1.4 }}>
+                        冷分子氢气与硅酸盐尘埃柱顶部包裹 EGGs 蒸发气态球，红宝石色原恒星与 HH 喷流正在其间诞生
+                      </div>
+                    </div>
+                    <div className="stat-card" style={{ gridColumn: '1 / -1' }}>
+                      <div className="stat-label">雕刻辐射源</div>
+                      <div className="stat-value" style={{ fontSize: 11.5 }}>
+                        外上侧 NGC 6611 幼年 O/B 星团强烈紫外电离风自左上方向下冲刷柱群
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="stat-card" style={{ gridColumn: '1 / -1' }}>
+                      <div className="stat-label">星团性质</div>
+                      <div className="stat-value" style={{ fontSize: 11.5 }}>
+                        年龄约 100–200 万年 · 富含 O4/O5/B 型极端大质量炽热恒星
+                      </div>
+                    </div>
+                    <div className="stat-card" style={{ gridColumn: '1 / -1' }}>
+                      <div className="stat-label">动力学效应</div>
+                      <div className="stat-value" style={{ fontSize: 11.5, lineHeight: 1.4 }}>
+                        持续释放强紫外电离辐射与高速恒星风，吹散 M16 分子云并雕刻出创生之柱的三维手指状空腔
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {isPillars ? (
+                <>
+                  <div className="section-title" style={{ marginTop: 8 }}>多波段望远镜观测</div>
+                  <div className="btn-row" style={{ marginBottom: 8 }}>
+                    <button
+                      className={`hud-btn ${specMode === 'hst_optical' ? 'active' : ''}`}
+                      style={{ flex: 1, justifyContent: 'center', fontSize: 11 }}
+                      onClick={() =>
+                        updateBodyProps(body.id, {
+                          nebulaSpectrumMode: 'hst_optical',
+                          nebulaIrPenetration: 0.0,
+                        })
+                      }
+                    >
+                      哈勃可见光 (HST)
+                    </button>
+                    <button
+                      className={`hud-btn ${specMode === 'jwst_nircam' ? 'active' : ''}`}
+                      style={{ flex: 1, justifyContent: 'center', fontSize: 11 }}
+                      onClick={() =>
+                        updateBodyProps(body.id, {
+                          nebulaSpectrumMode: 'jwst_nircam',
+                          nebulaIrPenetration: 0.92,
+                        })
+                      }
+                    >
+                      韦伯近红外 (NIRCam)
+                    </button>
+                    <button
+                      className={`hud-btn ${specMode === 'jwst_miri' ? 'active' : ''}`}
+                      style={{ flex: 1, justifyContent: 'center', fontSize: 11 }}
+                      onClick={() =>
+                        updateBodyProps(body.id, {
+                          nebulaSpectrumMode: 'jwst_miri',
+                          nebulaIrPenetration: 0.98,
+                        })
+                      }
+                    >
+                      韦伯中红外 (MIRI)
+                    </button>
+                  </div>
+
+                  <div className="slider-row">
+                    <div className="slider-header">
+                      <span>红外尘埃穿透 (HST ⇄ JWST)</span>
+                      <span className="mono" style={{ color: '#f3a36d' }}>
+                        {Math.round(irVal * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      className="cosmos-slider"
+                      min={0}
+                      max={1}
+                      step={0.02}
+                      value={irVal}
+                      onChange={(e) => {
+                        const v = parseFloat(e.target.value);
+                        updateBodyProps(body.id, {
+                          nebulaIrPenetration: v,
+                          nebulaSpectrumMode: v >= 0.45 ? 'jwst_nircam' : 'hst_optical',
+                        });
+                      }}
+                    />
+                  </div>
+
+                  <div className="slider-row">
+                    <div className="slider-header">
+                      <span>冷分子尘埃柱浓度</span>
+                      <span className="mono" style={{ color: '#9cd2e6' }}>
+                        {Math.round(densityVal * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      className="cosmos-slider"
+                      min={0.4}
+                      max={1.8}
+                      step={0.05}
+                      value={densityVal}
+                      onChange={(e) =>
+                        updateBodyProps(body.id, { nebulaDensity: parseFloat(e.target.value) })
+                      }
+                    />
+                  </div>
+
+                  <div className="section-title" style={{ marginTop: 8 }}>ESO MUSE 3D 快捷视角</div>
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1fr 1fr',
+                      gap: 6,
+                      marginBottom: 8,
+                    }}
+                  >
+                    <button
+                      className="hud-btn"
+                      style={{ justifyContent: 'center', fontSize: 11.5 }}
+                      onClick={() => setPillarsViewPreset('classic')}
+                    >
+                      🏛️ 哈勃/韦伯经典视角
+                    </button>
+                    <button
+                      className="hud-btn"
+                      style={{ justifyContent: 'center', fontSize: 11.5 }}
+                      onClick={() => setPillarsViewPreset('canyon')}
+                    >
+                      🏜️ 柱间峡谷仰视
+                    </button>
+                    <button
+                      className="hud-btn"
+                      style={{ justifyContent: 'center', fontSize: 11.5 }}
+                      onClick={() => setPillarsViewPreset('muse_side')}
+                    >
+                      📐 ESO MUSE 3D 侧视
+                    </button>
+                    <button
+                      className="hud-btn"
+                      style={{ justifyContent: 'center', fontSize: 11.5 }}
+                      onClick={() => setPillarsViewPreset('tips')}
+                    >
+                      🌟 柱顶原恒星喷流
+                    </button>
+                  </div>
+
+                  <button
+                    className="hud-btn active"
+                    style={{ width: '100%', justifyContent: 'center' }}
+                    onClick={() => toggleFreeFlight()}
+                  >
+                    🛸 驾驶飞船穿越创生之柱 (F)
+                  </button>
+                </>
+              ) : (
+                <button
+                  className="hud-btn active"
+                  style={{ width: '100%', justifyContent: 'center' }}
+                  onClick={() => setPillarsViewPreset('classic')}
+                >
+                  🏛️ 返回创生之柱全景
                 </button>
               )}
             </div>

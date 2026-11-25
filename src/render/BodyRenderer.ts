@@ -16,6 +16,10 @@ import {
   createGravitationalLensMaterial,
   createIoSurfaceMaterial,
   createJupiterAuroraMaterial,
+  createNgc6611ClusterMaterial,
+  createPillarsBackdropMaterial,
+  createPillarsStarsMaterial,
+  createPillarsVolumeMaterial,
   createProminenceMaterial,
   createPulsarJetMaterial,
   createRingMaterial,
@@ -30,6 +34,7 @@ import {
   MAX_OCCLUDERS,
   MAX_STAR_LIGHTS,
 } from './shaders/bodyShaders';
+import { PILLARS_BCENTER, PILLARS_BSIZE } from './PillarsBaker';
 import { PlanetTextures, textureAtlas } from './TextureAtlas';
 
 const SHARED_SPHERE_GEO = new THREE.SphereGeometry(1, 64, 48);
@@ -423,6 +428,218 @@ function buildDwarfEllipticalStarsGeometry(count: number, isM110: boolean): THRE
 const SHARED_ANDROMEDA_STARS_GEO = buildAndromedaStarsGeometry(40000);
 const SHARED_M32_STARS_GEO = buildDwarfEllipticalStarsGeometry(360, false);
 const SHARED_M110_STARS_GEO = buildDwarfEllipticalStarsGeometry(460, true);
+const SHARED_PILLARS_BOX_GEO = new THREE.BoxGeometry(
+  PILLARS_BSIZE.x,
+  PILLARS_BSIZE.y,
+  PILLARS_BSIZE.z
+).translate(PILLARS_BCENTER.x, PILLARS_BCENTER.y, PILLARS_BCENTER.z);
+const SHARED_PILLARS_BACKDROP_GEO = new THREE.SphereGeometry(13.2, 28, 18);
+
+function buildPillarsStarsGeometries(): {
+  bgGeo: THREE.BufferGeometry;
+  fgGeo: THREE.BufferGeometry;
+} {
+  const { rand, gauss } = createGalaxyPrng(6611);
+
+  const colProtoRuby = new THREE.Color('#ff2e4c');
+  const colProtoGold = new THREE.Color('#ffb85c');
+  const colHhCrimson = new THREE.Color('#ff3e1a');
+  const colFieldWhite = new THREE.Color('#f4f7ff');
+  const colFieldBlue = new THREE.Color('#9ec4ff');
+  const colFieldGold = new THREE.Color('#ffdca8');
+  const tmpCol = new THREE.Color();
+
+  // Sample along tilted diagonal ESO MUSE pillar capsule segments (matching evalPillarsCoarseSDF)
+  const sampleSegment = (
+    ax: number,
+    ay: number,
+    az: number,
+    bx: number,
+    by: number,
+    bz: number,
+    ra: number,
+    rb: number,
+    radialSpread = 0.65
+  ) => {
+    const h = rand();
+    const rMax = (ra + (rb - ra) * h) * radialSpread;
+    const rad = Math.cbrt(rand()) * rMax;
+    const th = rand() * Math.PI * 2;
+    const ph = Math.acos(2 * rand() - 1);
+    return [
+      ax + (bx - ax) * h + Math.sin(ph) * Math.cos(th) * rad,
+      ay + (by - ay) * h + Math.cos(ph) * rad,
+      az + (bz - az) * h + Math.sin(ph) * Math.sin(th) * rad,
+    ];
+  };
+
+  // Layer 1 (renderOrder = 1): M16 background/cavity starfield naturally occluded by opaque HST columns
+  const bgCount = 2600;
+  const bgPos = new Float32Array(bgCount * 3);
+  const bgCol = new Float32Array(bgCount * 3);
+  const bgSize = new Float32Array(bgCount);
+  const bgPop = new Float32Array(bgCount);
+
+  for (let i = 0; i < bgCount; i++) {
+    const r3 = 2.6 + Math.cbrt(rand()) * 9.4;
+    const th = rand() * Math.PI * 2;
+    const ph = Math.acos(2 * rand() - 1);
+    const x = r3 * Math.sin(ph) * Math.cos(th);
+    const y = r3 * Math.cos(ph);
+    const z = r3 * Math.sin(ph) * Math.sin(th) - 1.4; // gently bias behind foreground dust
+    const s = rand();
+    tmpCol.copy(s < 0.34 ? colFieldBlue : s < 0.72 ? colFieldWhite : colFieldGold);
+    const isHero = i >= bgCount - 16;
+
+    bgPos[i * 3] = x;
+    bgPos[i * 3 + 1] = y;
+    bgPos[i * 3 + 2] = z;
+    bgCol[i * 3] = tmpCol.r;
+    bgCol[i * 3 + 1] = tmpCol.g;
+    bgCol[i * 3 + 2] = tmpCol.b;
+    bgSize[i] = isHero ? 2.15 + rand() * 1.15 : 0.42 + Math.pow(rand(), 3.2) * 1.15;
+    bgPop[i] = 2;
+  }
+
+  const bgGeo = new THREE.BufferGeometry();
+  bgGeo.setAttribute('position', new THREE.BufferAttribute(bgPos, 3));
+  bgGeo.setAttribute('aStarCol', new THREE.BufferAttribute(bgCol, 3));
+  bgGeo.setAttribute('aStarSize', new THREE.BufferAttribute(bgSize, 1));
+  bgGeo.setAttribute('aStarPop', new THREE.BufferAttribute(bgPop, 1));
+
+  // Layer 2 (renderOrder = 3): Embedded protostars (pop 0), HH knots (pop 1) & foreground hero stars (pop 2)
+  const fgCount = 1350;
+  const fgPos = new Float32Array(fgCount * 3);
+  const fgCol = new Float32Array(fgCount * 3);
+  const fgSize = new Float32Array(fgCount);
+  const fgPop = new Float32Array(fgCount);
+
+  const nEmbeddedEnd = 900;
+  const nHhEnd = 1120;
+
+  for (let i = 0; i < fgCount; i++) {
+    let x: number;
+    let y: number;
+    let z: number;
+    let pop = 2;
+
+    if (i < nEmbeddedEnd) {
+      const pPick = rand();
+      let pt: number[];
+      if (pPick < 0.40) {
+        pt = rand() < 0.55
+          ? sampleSegment(-0.12, 0.80, 0.42, 2.38, 4.95, 1.92, 0.78, 0.40)
+          : sampleSegment(-2.10, -3.45, -0.75, -0.12, 0.80, 0.42, 1.22, 0.80);
+      } else if (pPick < 0.72) {
+        pt = rand() < 0.60
+          ? sampleSegment(1.85, -0.35, 0.05, 3.75, 2.95, -0.82, 0.64, 0.34)
+          : sampleSegment(0.05, -4.05, 0.75, 1.85, -0.35, 0.05, 1.06, 0.66);
+      } else if (pPick < 0.88) {
+        pt = sampleSegment(1.85, -5.25, 1.25, 4.58, 0.15, -0.88, 0.88, 0.26);
+      } else {
+        pt = sampleSegment(-3.65, -5.25, 2.02, -1.95, -1.62, 2.36, 0.92, 0.28);
+      }
+      [x, y, z] = pt;
+      tmpCol.copy(rand() < 0.58 ? colProtoRuby : colProtoGold);
+      const isHero = i < 20;
+      fgSize[i] = isHero ? 2.15 + rand() * 1.15 : 0.78 + Math.pow(rand(), 1.8) * 1.15;
+      pop = 0;
+    } else if (i < nHhEnd) {
+      const kPick = rand();
+      if (kPick < 0.45) {
+        x = 3.66 + gauss() * 0.18;
+        y = 2.82 + gauss() * 0.18;
+        z = -0.78 + gauss() * 0.16;
+      } else if (kPick < 0.78) {
+        x = -2.02 + gauss() * 0.17;
+        y = -1.78 + gauss() * 0.17;
+        z = 2.34 + gauss() * 0.15;
+      } else {
+        x = 4.52 + gauss() * 0.15;
+        y = 0.06 + gauss() * 0.15;
+        z = -0.84 + gauss() * 0.14;
+      }
+      tmpCol.copy(colHhCrimson).lerp(colProtoGold, rand() * 0.32);
+      fgSize[i] = 0.75 + Math.pow(rand(), 1.6) * 1.10;
+      pop = 1;
+    } else {
+      // Bright sparkling JWST/HST foreground & ionizing NGC 6611 corner stars outside the dust shaft core
+      if (rand() < 0.24) {
+        x = -4.6 + gauss() * 2.0;
+        y = 5.6 + gauss() * 1.7;
+        z = 3.2 + gauss() * 1.4;
+        tmpCol.copy(colFieldBlue).lerp(colFieldWhite, rand() * 0.6);
+      } else {
+        const rad = 5.8 + Math.cbrt(rand()) * 5.8;
+        const th = rand() * Math.PI * 2;
+        const ph = Math.acos(2 * rand() - 1);
+        x = rad * Math.sin(ph) * Math.cos(th);
+        y = rad * Math.cos(ph);
+        z = rad * Math.sin(ph) * Math.sin(th);
+        if (z < 2.4) z = 2.4 + Math.abs(z) * 0.45;
+        const s = rand();
+        tmpCol.copy(s < 0.36 ? colFieldBlue : s < 0.74 ? colFieldWhite : colFieldGold);
+      }
+      const isSpikedHero = i >= fgCount - 28;
+      fgSize[i] = isSpikedHero ? 2.25 + rand() * 1.45 : 0.62 + Math.pow(rand(), 2.5) * 1.18;
+      pop = 2;
+    }
+
+    fgPos[i * 3] = x;
+    fgPos[i * 3 + 1] = y;
+    fgPos[i * 3 + 2] = z;
+    fgCol[i * 3] = tmpCol.r;
+    fgCol[i * 3 + 1] = tmpCol.g;
+    fgCol[i * 3 + 2] = tmpCol.b;
+    fgPop[i] = pop;
+  }
+
+  const fgGeo = new THREE.BufferGeometry();
+  fgGeo.setAttribute('position', new THREE.BufferAttribute(fgPos, 3));
+  fgGeo.setAttribute('aStarCol', new THREE.BufferAttribute(fgCol, 3));
+  fgGeo.setAttribute('aStarSize', new THREE.BufferAttribute(fgSize, 1));
+  fgGeo.setAttribute('aStarPop', new THREE.BufferAttribute(fgPop, 1));
+
+  return { bgGeo, fgGeo };
+}
+
+function buildNgc6611StarsGeometry(count = 480): THREE.BufferGeometry {
+  const positions = new Float32Array(count * 3);
+  const colors = new Float32Array(count * 3);
+  const sizes = new Float32Array(count);
+
+  const { rand } = createGalaxyPrng(6612);
+  const colOB = new THREE.Color('#9ec8ff');
+  const colWhite = new THREE.Color('#f4f8ff');
+  const colGold = new THREE.Color('#ffe0ad');
+  const tmpCol = new THREE.Color();
+
+  for (let i = 0; i < count; i++) {
+    const r = Math.pow(rand(), 1.45) * 4.8;
+    const th = rand() * Math.PI * 2;
+    const ph = Math.acos(2 * rand() - 1);
+    positions[i * 3] = r * Math.sin(ph) * Math.cos(th);
+    positions[i * 3 + 1] = r * Math.cos(ph);
+    positions[i * 3 + 2] = r * Math.sin(ph) * Math.sin(th);
+
+    const isHero = i < 18;
+    tmpCol.copy(rand() < 0.72 ? colOB : rand() < 0.85 ? colWhite : colGold);
+    colors[i * 3] = tmpCol.r;
+    colors[i * 3 + 1] = tmpCol.g;
+    colors[i * 3 + 2] = tmpCol.b;
+    sizes[i] = isHero ? 2.0 + rand() * 1.4 : 0.65 + Math.pow(rand(), 2.4) * 1.1;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('aStarCol', new THREE.BufferAttribute(colors, 3));
+  geo.setAttribute('aStarSize', new THREE.BufferAttribute(sizes, 1));
+  return geo;
+}
+
+const { bgGeo: SHARED_PILLARS_BG_STARS_GEO, fgGeo: SHARED_PILLARS_FG_STARS_GEO } =
+  buildPillarsStarsGeometries();
+const SHARED_NGC6611_STARS_GEO = buildNgc6611StarsGeometry(480);
 
 interface ProminenceSlot {
   mesh: THREE.Mesh;
@@ -450,6 +667,12 @@ export interface BodyVisual {
   dwarfGalaxyGroup?: THREE.Group;
   dwarfVolume?: THREE.Mesh;
   dwarfStars?: THREE.Points;
+  pillarsGroup?: THREE.Group;
+  pillarsBackdrop?: THREE.Mesh;
+  pillarsVolume?: THREE.Mesh;
+  pillarsBgStars?: THREE.Points;
+  pillarsStars?: THREE.Points;
+  ngcClusterPoints?: THREE.Points;
   ringMesh?: THREE.Mesh;
   coronaMesh?: THREE.Mesh;
   prominenceGroup?: THREE.Group;
@@ -480,6 +703,8 @@ export function computeVisualRadius(
   if (body.galaxyType === 'andromeda') return 13.5;
   if (body.galaxyType === 'dwarf_elliptical_compact') return 2.4;
   if (body.galaxyType === 'dwarf_elliptical_diffuse') return 4.2;
+  if (body.nebulaType === 'pillars_of_creation') return 12.5;
+  if (body.nebulaType === 'ngc6611_cluster') return 3.2;
 
   const realRadius = Math.max(body.radius * METERS_TO_SCENE, 0.00015);
   if (scaleMode === 'real') {
@@ -624,7 +849,8 @@ export class BodyRenderer {
     showTrails: boolean,
     selectedId: string | null,
     elapsedTime: number,
-    cmeWaves: CmeWave[] = []
+    cmeWaves: CmeWave[] = [],
+    graphicsQuality: 'high' | 'fast' = 'high'
   ): void {
     const aliveIds = new Set<string>();
     const syncDt = Math.min(0.05, Math.max(0, elapsedTime - this.lastElapsedTime));
@@ -1061,6 +1287,52 @@ export class BodyRenderer {
         dsMat.uniforms.uPixelRatio.value = pxRatio;
       }
 
+      if (vis.pillarsGroup && vis.pillarsVolume && vis.pillarsStars) {
+        vis.pillarsGroup.scale.setScalar(r);
+        vis.root.updateMatrixWorld(true);
+        const nebModeVal =
+          body.nebulaSpectrumMode === 'jwst_nircam'
+            ? 1.0
+            : body.nebulaSpectrumMode === 'jwst_miri'
+              ? 2.0
+              : 0.0;
+        const irVal =
+          body.nebulaIrPenetration ?? (body.nebulaSpectrumMode === 'jwst_nircam' ? 0.92 : 0.0);
+        const densVal = body.nebulaDensity ?? 1.0;
+        const pxRatio = Math.min(window.devicePixelRatio || 1, 1.25);
+
+        if (vis.pillarsBackdrop) {
+          const pBgMat = vis.pillarsBackdrop.material as THREE.ShaderMaterial;
+          pBgMat.uniforms.uSpectrumMode.value = nebModeVal;
+          pBgMat.uniforms.uIrPenetration.value = irVal;
+          pBgMat.uniforms.uInvModelMatrix.value.copy(vis.pillarsBackdrop.matrixWorld).invert();
+        }
+
+        const pVolMat = vis.pillarsVolume.material as THREE.ShaderMaterial;
+        pVolMat.uniforms.uTime.value = elapsedTime;
+        pVolMat.uniforms.uSpectrumMode.value = nebModeVal;
+        pVolMat.uniforms.uIrPenetration.value = irVal;
+        pVolMat.uniforms.uDensityScale.value = densVal;
+        pVolMat.uniforms.uMaxSteps.value = graphicsQuality === 'fast' ? 16.0 : 24.0;
+        pVolMat.uniforms.uInvModelMatrix.value.copy(vis.pillarsVolume.matrixWorld).invert();
+
+        for (const starLayer of [vis.pillarsBgStars, vis.pillarsStars]) {
+          if (!starLayer) continue;
+          const pStarMat = starLayer.material as THREE.ShaderMaterial;
+          pStarMat.uniforms.uTime.value = elapsedTime;
+          pStarMat.uniforms.uSpectrumMode.value = nebModeVal;
+          pStarMat.uniforms.uIrPenetration.value = irVal;
+          pStarMat.uniforms.uPixelRatio.value = pxRatio;
+        }
+      }
+
+      if (vis.ngcClusterPoints) {
+        vis.ngcClusterPoints.scale.setScalar(r);
+        const nMat = vis.ngcClusterPoints.material as THREE.ShaderMaterial;
+        nMat.uniforms.uTime.value = elapsedTime;
+        nMat.uniforms.uPixelRatio.value = Math.min(window.devicePixelRatio || 1, 1.25);
+      }
+
       if (vis.blackHoleVolume) {
         vis.blackHoleVolume.scale.setScalar(r);
         vis.root.updateMatrixWorld(true);
@@ -1192,9 +1464,11 @@ export class BodyRenderer {
       const pickRadius = Math.max(
         body.galaxyType
           ? r * 2.2
-          : body.category === 'black_hole'
-            ? r * 4.2
-            : r * 1.45,
+          : body.nebulaType
+            ? r * 3.5
+            : body.category === 'black_hole'
+              ? r * 4.2
+              : r * 1.45,
         camDist * 0.022
       );
       vis.pickMesh.scale.setScalar(pickRadius);
@@ -1233,7 +1507,8 @@ export class BodyRenderer {
         body.trail.length > 1 &&
         !body.isLensSource &&
         !body.isGravitationalLens &&
-        !body.galaxyType;
+        !body.galaxyType &&
+        !body.nebulaType;
       if (vis.trailLine.visible) {
         const trail = body.trail;
         const count = Math.min(trail.length, MAX_TRAIL_VERTS);
@@ -1270,7 +1545,8 @@ export class BodyRenderer {
       selectedVis &&
       !selectedBody?.isGravitationalLens &&
       !selectedBody?.isLensSource &&
-      !selectedBody?.galaxyType
+      !selectedBody?.galaxyType &&
+      !selectedBody?.nebulaType
     ) {
       const camDist = Math.max(0.1, camera.position.distanceTo(selectedVis.renderedPos));
       const baseMult = selectedVis.category === 'black_hole' ? 3.8 : 1.14;
@@ -1303,7 +1579,7 @@ export class BodyRenderer {
     let surfaceMaterial: THREE.Material;
     let useEarthClouds = false;
 
-    if (body.isGravitationalLens || body.isLensSource || body.galaxyType) {
+    if (body.isGravitationalLens || body.isLensSource || body.galaxyType || body.nebulaType) {
       surfaceMaterial = new THREE.MeshBasicMaterial({ visible: false });
     } else if (body.volcanicIo) {
       surfaceMaterial = createIoSurfaceMaterial(body, this.textures);
@@ -1481,6 +1757,63 @@ export class BodyRenderer {
       dwarfGalaxyGroup.add(dwarfStars);
 
       root.add(dwarfGalaxyGroup);
+    }
+
+    let pillarsGroup: THREE.Group | undefined;
+    let pillarsBackdrop: THREE.Mesh | undefined;
+    let pillarsVolume: THREE.Mesh | undefined;
+    let pillarsBgStars: THREE.Points | undefined;
+    let pillarsStars: THREE.Points | undefined;
+    if (body.nebulaType === 'pillars_of_creation') {
+      const pMaps = textureAtlas.getPillarsMaps();
+      if (pMaps) {
+        pillarsGroup = new THREE.Group();
+
+        pillarsBackdrop = new THREE.Mesh(
+          SHARED_PILLARS_BACKDROP_GEO,
+          createPillarsBackdropMaterial(pMaps.cloudNoiseMap)
+        );
+        pillarsBackdrop.renderOrder = 1;
+        pillarsBackdrop.frustumCulled = false;
+        pillarsGroup.add(pillarsBackdrop);
+
+        pillarsBgStars = new THREE.Points(
+          SHARED_PILLARS_BG_STARS_GEO,
+          createPillarsStarsMaterial()
+        );
+        pillarsBgStars.renderOrder = 2;
+        pillarsBgStars.frustumCulled = false;
+        pillarsGroup.add(pillarsBgStars);
+
+        pillarsVolume = new THREE.Mesh(
+          SHARED_PILLARS_BOX_GEO,
+          createPillarsVolumeMaterial(pMaps)
+        );
+        pillarsVolume.renderOrder = 3;
+        pillarsVolume.frustumCulled = false;
+        pillarsGroup.add(pillarsVolume);
+
+        pillarsStars = new THREE.Points(
+          SHARED_PILLARS_FG_STARS_GEO,
+          createPillarsStarsMaterial()
+        );
+        pillarsStars.renderOrder = 4;
+        pillarsStars.frustumCulled = false;
+        pillarsGroup.add(pillarsStars);
+
+        root.add(pillarsGroup);
+      }
+    }
+
+    let ngcClusterPoints: THREE.Points | undefined;
+    if (body.nebulaType === 'ngc6611_cluster') {
+      ngcClusterPoints = new THREE.Points(
+        SHARED_NGC6611_STARS_GEO,
+        createNgc6611ClusterMaterial()
+      );
+      ngcClusterPoints.renderOrder = 3;
+      ngcClusterPoints.frustumCulled = false;
+      root.add(ngcClusterPoints);
     }
 
     let atmosphereMesh: THREE.Mesh | undefined;
@@ -1666,6 +1999,12 @@ export class BodyRenderer {
       dwarfGalaxyGroup,
       dwarfVolume,
       dwarfStars,
+      pillarsGroup,
+      pillarsBackdrop,
+      pillarsVolume,
+      pillarsBgStars,
+      pillarsStars,
+      ngcClusterPoints,
       ringMesh,
       coronaMesh,
       prominenceGroup,
@@ -1694,11 +2033,14 @@ export class BodyRenderer {
     if (vis.auroraMesh) (vis.auroraMesh.material as THREE.Material).dispose();
     if (vis.jupiterAuroraMesh) (vis.jupiterAuroraMesh.material as THREE.Material).dispose();
     if (vis.lensVolume) (vis.lensVolume.material as THREE.Material).dispose();
-    for (const grp of [vis.sourceGalaxyGroup, vis.andromedaGroup, vis.dwarfGalaxyGroup]) {
+    for (const grp of [vis.sourceGalaxyGroup, vis.andromedaGroup, vis.dwarfGalaxyGroup, vis.pillarsGroup]) {
       grp?.traverse((child) => {
         const obj = child as THREE.Mesh | THREE.Points;
         if (obj.material) (obj.material as THREE.Material).dispose();
       });
+    }
+    if (vis.ngcClusterPoints) {
+      (vis.ngcClusterPoints.material as THREE.Material).dispose();
     }
     if (vis.ringMesh) {
       vis.ringMesh.geometry.dispose();

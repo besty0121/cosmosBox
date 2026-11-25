@@ -32,6 +32,7 @@ import {
   GalaxySpectrumMode,
   KilonovaEvent,
   LaunchMode,
+  NebulaSpectrumMode,
   ScaleMode,
   ScenarioDefinition,
   ScreenLabel,
@@ -71,6 +72,8 @@ interface CosmosState {
   focusBodyId: string | null;
   cameraMode: CameraMode;
   cameraTargetName: string | null;
+  flightGearIndex: number;
+  flightSpeedUnits: number;
 
   spawnActive: boolean;
   selectedTemplateId: string;
@@ -113,6 +116,9 @@ interface CosmosState {
   enterSurfaceView: (id: string) => void;
   cycleSurfaceSpot: () => void;
   toggleCinematicTour: () => void;
+  toggleFreeFlight: () => void;
+  shiftFlightGear: (delta: 1 | -1) => void;
+  setFlightGear: (index: number) => void;
   exitSpecialCameraMode: () => void;
   deleteBody: (id: string) => void;
 
@@ -139,11 +145,15 @@ interface CosmosState {
       lensShear: number;
       galaxyDustOpacity: number;
       galaxySpectrumMode: GalaxySpectrumMode;
+      nebulaSpectrumMode: NebulaSpectrumMode;
+      nebulaIrPenetration: number;
+      nebulaDensity: number;
       rotationHours: number;
       axialTiltDeg: number;
     }>
   ) => void;
   setAndromedaViewPreset: (preset: 'earth' | 'face_on' | 'edge_on' | 'core') => void;
+  setPillarsViewPreset: (preset: 'classic' | 'canyon' | 'muse_side' | 'tips') => void;
   triggerBodySupernova: (id: string) => void;
   launchSolarCME: (starId?: string, mode?: 'random' | 'target') => void;
 
@@ -222,6 +232,8 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
   focusBodyId: null,
   cameraMode: 'orbit',
   cameraTargetName: null,
+  flightGearIndex: 3,
+  flightSpeedUnits: 0,
 
   spawnActive: false,
   selectedTemplateId: SPAWN_TEMPLATES[0].id,
@@ -451,6 +463,25 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
     }
   },
 
+  toggleFreeFlight: () => {
+    const { sceneManager, cameraMode } = get();
+    if (!sceneManager) return;
+    if (cameraMode === 'flight') {
+      sceneManager.exitSpecialCameraMode(true);
+    } else {
+      sceneManager.startFreeFlight();
+      get().showToast('🛸 已进入 6 自由度飞船巡航（WASD/QE 移动 · 滚轮变速）');
+    }
+  },
+
+  shiftFlightGear: (delta) => {
+    get().sceneManager?.shiftFlightGear(delta);
+  },
+
+  setFlightGear: (index) => {
+    get().sceneManager?.setFlightGear(index);
+  },
+
   exitSpecialCameraMode: () => {
     get().sceneManager?.exitSpecialCameraMode(true);
   },
@@ -465,6 +496,22 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
       set({
         focusBodyId: m31.id,
         selectedBodyId: m31.id,
+        cameraMode: 'orbit',
+        cameraTargetName: null,
+      });
+    }
+  },
+
+  setPillarsViewPreset: (preset) => {
+    const { engine, sceneManager } = get();
+    if (!engine || !sceneManager) return;
+    sceneManager.exitSpecialCameraMode(false);
+    const pillars = engine.bodies.find((b) => b.alive && b.nebulaType === 'pillars_of_creation');
+    sceneManager.setPillarsViewPreset(preset);
+    if (pillars) {
+      set({
+        focusBodyId: pillars.id,
+        selectedBodyId: pillars.id,
         cameraMode: 'orbit',
         cameraTargetName: null,
       });
@@ -613,6 +660,9 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
     if (patch.lensShear !== undefined) body.lensShear = patch.lensShear;
     if (patch.galaxyDustOpacity !== undefined) body.galaxyDustOpacity = patch.galaxyDustOpacity;
     if (patch.galaxySpectrumMode !== undefined) body.galaxySpectrumMode = patch.galaxySpectrumMode;
+    if (patch.nebulaSpectrumMode !== undefined) body.nebulaSpectrumMode = patch.nebulaSpectrumMode;
+    if (patch.nebulaIrPenetration !== undefined) body.nebulaIrPenetration = patch.nebulaIrPenetration;
+    if (patch.nebulaDensity !== undefined) body.nebulaDensity = patch.nebulaDensity;
     if (patch.rotationHours !== undefined) {
       body.rotationPeriod = Math.max(0.5, patch.rotationHours) * HOUR;
     }
