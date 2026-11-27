@@ -343,6 +343,8 @@ export type DirectorResolution = 'viewport' | '720p' | '1080p';
 
 export type DirectorFps = 30 | 60;
 
+export type DirectorVideoFormat = 'mp4' | 'webm';
+
 export interface DirectorKeyframe {
   id: string;
   name: string;
@@ -371,6 +373,8 @@ export interface DirectorKeyframe {
 export interface DirectorRecordingResult {
   filename: string;
   mimeType: string;
+  format: DirectorVideoFormat;
+  fallbackFrom?: DirectorVideoFormat;
   sizeBytes: number;
   durationSec: number;
   width: number;

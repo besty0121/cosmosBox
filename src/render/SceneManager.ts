@@ -26,6 +26,7 @@ import {
   DirectorKeyframe,
   DirectorRecordingResult,
   DirectorResolution,
+  DirectorVideoFormat,
   KilonovaEvent,
   LaunchMode,
   ScaleMode,
@@ -98,7 +99,9 @@ export interface SceneCallbacks {
     recording: boolean,
     elapsedSec: number,
     result?: DirectorRecordingResult,
-    errorMsg?: string
+    errorMsg?: string,
+    activeFormat?: DirectorVideoFormat,
+    fallbackFrom?: DirectorVideoFormat
   ) => void;
 }
 
@@ -167,13 +170,14 @@ export class SceneManager {
   private flightRight = new THREE.Vector3();
   private flightUp = new THREE.Vector3();
 
-  // Keyframe Director & Clean WebM Video Recording state
+  // Keyframe Director & Clean MP4/WebM Video Recording state
   private directorKeyframes: DirectorKeyframe[] = [];
   private directorTimeSec = 0;
   private directorPlaying = false;
   private directorLoop = false;
   private directorRecordOnPlay = false;
   private recordingSizeLock: { width: number; height: number } | null = null;
+  private recordingActualFormat: DirectorVideoFormat = 'mp4';
   private videoRecorder = new VideoRecorder();
 
   // Floating origin in SI meters (tracks focused body for zero float jitter)
@@ -636,6 +640,7 @@ export class SceneManager {
       loop?: boolean;
       startTimeSec?: number;
       record?: {
+        format: DirectorVideoFormat;
         resolution: DirectorResolution;
         fps: DirectorFps;
         includeAudio: boolean;
@@ -731,6 +736,7 @@ export class SceneManager {
   }
 
   public startFreeRecording(opts: {
+    format: DirectorVideoFormat;
     resolution: DirectorResolution;
     fps: DirectorFps;
     includeAudio: boolean;
@@ -745,7 +751,14 @@ export class SceneManager {
     this.directorRecordOnPlay = false;
     const result = await this.videoRecorder.stop();
     this.unlockRecordingResolution();
-    this.callbacks.onRecordingStateChange?.(false, 0, result ?? undefined);
+    this.callbacks.onRecordingStateChange?.(
+      false,
+      0,
+      result ?? undefined,
+      undefined,
+      result?.format ?? this.recordingActualFormat,
+      result?.fallbackFrom
+    );
     return result;
   }
 
@@ -754,23 +767,26 @@ export class SceneManager {
   }
 
   private beginCanvasRecording(opts: {
+    format: DirectorVideoFormat;
     resolution: DirectorResolution;
     fps: DirectorFps;
     includeAudio: boolean;
     filenamePrefix: string;
   }): boolean {
-    const { width, height } = this.lockRecordingResolution(opts.resolution);
+    const { width, height } = this.lockRecordingResolution(opts.resolution, opts.format);
     const audioStream = opts.includeAudio ? cosmosAudio.getMediaStream() : null;
     try {
-      this.videoRecorder.start({
+      const { actualFormat, fallbackFrom } = this.videoRecorder.start({
         canvas: this.renderer.domElement,
+        format: opts.format,
         fps: opts.fps,
         width,
         height,
         filenamePrefix: opts.filenamePrefix,
         audioStream,
       });
-      this.callbacks.onRecordingStateChange?.(true, 0);
+      this.recordingActualFormat = actualFormat;
+      this.callbacks.onRecordingStateChange?.(true, 0, undefined, undefined, actualFormat, fallbackFrom);
       return true;
     } catch (err) {
       this.unlockRecordingResolution();
@@ -780,13 +796,23 @@ export class SceneManager {
     }
   }
 
-  private lockRecordingResolution(resolution: DirectorResolution): { width: number; height: number } {
+  private lockRecordingResolution(
+    resolution: DirectorResolution,
+    format: DirectorVideoFormat
+  ): { width: number; height: number } {
     const dom = this.renderer.domElement;
+    let width = resolution === '1080p' ? 1920 : 1280;
+    let height = resolution === '1080p' ? 1080 : 720;
+
     if (resolution === 'viewport') {
-      return { width: dom.width, height: dom.height };
+      const needsEven = format === 'mp4' && (dom.width % 2 !== 0 || dom.height % 2 !== 0);
+      if (!needsEven) {
+        return { width: dom.width, height: dom.height };
+      }
+      width = Math.max(2, dom.width - (dom.width % 2));
+      height = Math.max(2, dom.height - (dom.height % 2));
     }
-    const width = resolution === '1080p' ? 1920 : 1280;
-    const height = resolution === '1080p' ? 1080 : 720;
+
     this.recordingSizeLock = { width, height };
     dom.style.objectFit = 'contain';
     this.camera.aspect = width / height;
@@ -2141,7 +2167,13 @@ export class SceneManager {
         );
       }
       if (this.videoRecorder.isRecording()) {
-        this.callbacks.onRecordingStateChange?.(true, this.videoRecorder.getElapsedSec());
+        this.callbacks.onRecordingStateChange?.(
+          true,
+          this.videoRecorder.getElapsedSec(),
+          undefined,
+          undefined,
+          this.recordingActualFormat
+        );
       }
     }
   };

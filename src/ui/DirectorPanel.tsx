@@ -19,13 +19,14 @@ import {
   VolumeX,
   X,
 } from 'lucide-react';
-import { isWebMRecordingSupported } from '../render/VideoRecorder';
+import { isMp4RecordingSupported, isVideoRecordingSupported } from '../render/VideoRecorder';
 import { useCosmosStore } from '../store/useCosmosStore';
 import {
   DirectorEasing,
   DirectorFps,
   DirectorKeyframe,
   DirectorResolution,
+  DirectorVideoFormat,
 } from '../types/cosmos';
 
 function formatAstroChip(kf: DirectorKeyframe): string | null {
@@ -49,10 +50,12 @@ export function DirectorPanel() {
   const activeIndex = useCosmosStore((s) => s.directorActiveIndex);
   const playing = useCosmosStore((s) => s.directorPlaying);
   const loop = useCosmosStore((s) => s.directorLoop);
+  const format = useCosmosStore((s) => s.directorFormat);
   const resolution = useCosmosStore((s) => s.directorResolution);
   const fps = useCosmosStore((s) => s.directorFps);
   const includeAudio = useCosmosStore((s) => s.directorIncludeAudio);
   const recordingActive = useCosmosStore((s) => s.recordingActive);
+  const recordingFormat = useCosmosStore((s) => s.recordingFormat);
   const recordingElapsedSec = useCosmosStore((s) => s.recordingElapsedSec);
   const lastRecording = useCosmosStore((s) => s.lastRecording);
 
@@ -70,6 +73,7 @@ export function DirectorPanel() {
   const stopDirectorPlayback = useCosmosStore((s) => s.stopDirectorPlayback);
   const seekDirectorTime = useCosmosStore((s) => s.seekDirectorTime);
   const setDirectorLoop = useCosmosStore((s) => s.setDirectorLoop);
+  const setDirectorFormat = useCosmosStore((s) => s.setDirectorFormat);
   const setDirectorResolution = useCosmosStore((s) => s.setDirectorResolution);
   const setDirectorFps = useCosmosStore((s) => s.setDirectorFps);
   const setDirectorIncludeAudio = useCosmosStore((s) => s.setDirectorIncludeAudio);
@@ -83,7 +87,8 @@ export function DirectorPanel() {
 
   if (!open) return null;
 
-  const webmSupported = isWebMRecordingSupported();
+  const videoSupported = isVideoRecordingSupported();
+  const mp4Supported = isMp4RecordingSupported(includeAudio);
 
   const handleImportFile = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -97,6 +102,11 @@ export function DirectorPanel() {
     reader.readAsText(file);
     e.target.value = '';
   };
+
+  const formatOpts: { id: DirectorVideoFormat; label: string }[] = [
+    { id: 'mp4', label: 'MP4 (通用)' },
+    { id: 'webm', label: 'WebM' },
+  ];
 
   const resolutionOpts: { id: DirectorResolution; label: string }[] = [
     { id: 'viewport', label: '窗口' },
@@ -390,8 +400,22 @@ export function DirectorPanel() {
 
       <div className="director-section">
         <div className="section-title" style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span>纯净 WebM 视频输出</span>
-          {!webmSupported && <span style={{ color: '#ff8e99' }}>当前浏览器不支持</span>}
+          <span>纯净视频输出</span>
+          {!videoSupported && <span style={{ color: '#ff8e99' }}>当前浏览器不支持</span>}
+        </div>
+
+        <div className="btn-row">
+          {formatOpts.map((opt) => (
+            <button
+              key={opt.id}
+              className={`hud-btn ${format === opt.id ? 'active' : ''}`}
+              style={{ height: 25, fontSize: 11 }}
+              disabled={recordingActive}
+              onClick={() => setDirectorFormat(opt.id)}
+            >
+              {opt.label}
+            </button>
+          ))}
         </div>
 
         <div className="btn-row">
@@ -435,34 +459,40 @@ export function DirectorPanel() {
         {recordingActive ? (
           <button className="hud-btn director-btn-rec active" onClick={() => void stopRecording()}>
             <span className="rec-dot" />
-            停止并保存 WebM（{recordingElapsedSec.toFixed(1)}s）
+            停止并保存 {recordingFormat.toUpperCase()}（{recordingElapsedSec.toFixed(1)}s）
           </button>
         ) : (
           <div className="btn-row">
             <button
               className="hud-btn director-btn-rec"
-              disabled={!webmSupported || keyframes.length < 2}
+              disabled={!videoSupported || keyframes.length < 2}
               onClick={recordDirectorScript}
-              title="按关键帧脚本自动运镜并录制无 UI 纯净 WebM 视频"
+              title="按关键帧脚本自动运镜并录制无 UI 纯净 MP4 / WebM 视频"
             >
               <Video size={13} />
               运镜并录制
             </button>
             <button
               className="hud-btn"
-              disabled={!webmSupported}
+              disabled={!videoSupported}
               onClick={toggleFreeRecording}
               title="保持当前手动/飞船控制并直接录制纯净画布"
             >
-              <span className="rec-dot" style={{ opacity: webmSupported ? 0.85 : 0.3 }} />
+              <span className="rec-dot" style={{ opacity: videoSupported ? 0.85 : 0.3 }} />
               自由录屏
             </button>
           </div>
         )}
 
-        <div style={{ fontSize: 10.5, color: 'var(--text-secondary)', lineHeight: 1.4 }}>
-          直采纯净 3D 画布，导出的 WebM 自动无任何 UI 与准星
-        </div>
+        {format === 'mp4' && !mp4Supported ? (
+          <div style={{ fontSize: 10.5, color: 'var(--accent-amber)', lineHeight: 1.4 }}>
+            当前浏览器不支持原生 MP4，录制时将自动回退为 WebM
+          </div>
+        ) : (
+          <div style={{ fontSize: 10.5, color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+            直采纯净 3D 画布，无 UI 与准星（MP4 兼容苹果与微信）
+          </div>
+        )}
 
         {lastRecording && (
           <div className="director-last-rec mono" title={lastRecording.filename}>

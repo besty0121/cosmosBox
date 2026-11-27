@@ -41,6 +41,7 @@ export function App() {
   const directorActiveIndex = useCosmosStore((s) => s.directorActiveIndex);
   const directorPlaying = useCosmosStore((s) => s.directorPlaying);
   const recordingActive = useCosmosStore((s) => s.recordingActive);
+  const recordingFormat = useCosmosStore((s) => s.recordingFormat);
   const recordingElapsedSec = useCosmosStore((s) => s.recordingElapsedSec);
   const toast = useCosmosStore((s) => s.toast);
   const toggleHud = useCosmosStore((s) => s.toggleHud);
@@ -114,7 +115,7 @@ export function App() {
           useCosmosStore.getState().showToast('✅ 关键帧运镜预览完成');
         }
       },
-      onRecordingStateChange: (recording, elapsedSec, result, errorMsg) => {
+      onRecordingStateChange: (recording, elapsedSec, result, errorMsg, activeFormat) => {
         const st = useCosmosStore.getState();
         if (errorMsg) {
           useCosmosStore.setState({ recordingActive: false, recordingElapsedSec: 0 });
@@ -125,15 +126,21 @@ export function App() {
           cosmosAudio.playSpawnPing();
           useCosmosStore.setState({
             recordingActive: false,
+            recordingFormat: result.format,
             recordingElapsedSec: 0,
             lastRecording: result,
           });
           const mb = (result.sizeBytes / (1024 * 1024)).toFixed(2);
-          st.showToast(`🎬 已保存纯净 WebM 短片：${result.filename}（${mb} MB）`);
+          st.showToast(
+            result.fallbackFrom
+              ? `🎬 浏览器暂不支持原生 ${result.fallbackFrom.toUpperCase()}，已自动保存 ${result.format.toUpperCase()}：${result.filename}（${mb} MB）`
+              : `🎬 已保存纯净 ${result.format.toUpperCase()} 短片：${result.filename}（${mb} MB）`
+          );
           return;
         }
         useCosmosStore.setState({
           recordingActive: recording,
+          recordingFormat: activeFormat ?? st.recordingFormat,
           recordingElapsedSec: elapsedSec,
         });
       },
@@ -307,7 +314,7 @@ export function App() {
             <div className="glass-panel camera-mode-banner rec-banner">
               <span className="rec-dot" />
               <span>
-                正在录制纯净 WebM ·{' '}
+                正在录制纯净 {recordingFormat.toUpperCase()} ·{' '}
                 <strong className="mono">{recordingElapsedSec.toFixed(1)}s</strong>
               </span>
               {cameraMode === 'director' && directorKeyframes.length > 0 && (
@@ -381,7 +388,7 @@ export function App() {
             <button
               className="glass-panel hud-btn danger"
               onClick={() => void stopRecording()}
-              title="停止并保存当前 WebM 录制"
+              title="停止并保存当前视频录制"
             >
               <span className="rec-dot" />
               停止录制 ({recordingElapsedSec.toFixed(1)}s)

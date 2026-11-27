@@ -18,6 +18,7 @@ import {
   serializeDirectorScript,
 } from '../render/DirectorEngine';
 import { GraphicsQuality, SceneManager } from '../render/SceneManager';
+import { isMp4RecordingSupported } from '../render/VideoRecorder';
 import { SCENARIOS } from '../scenarios/presets';
 import { SPAWN_TEMPLATES } from '../scenarios/templates';
 import {
@@ -38,6 +39,7 @@ import {
   DirectorKeyframe,
   DirectorRecordingResult,
   DirectorResolution,
+  DirectorVideoFormat,
   GalaxySpectrumMode,
   KilonovaEvent,
   LaunchMode,
@@ -81,10 +83,12 @@ interface CosmosState {
   directorActiveIndex: number;
   directorPlaying: boolean;
   directorLoop: boolean;
+  directorFormat: DirectorVideoFormat;
   directorResolution: DirectorResolution;
   directorFps: DirectorFps;
   directorIncludeAudio: boolean;
   recordingActive: boolean;
+  recordingFormat: DirectorVideoFormat;
   recordingElapsedSec: number;
   lastRecording: DirectorRecordingResult | null;
 
@@ -149,6 +153,7 @@ interface CosmosState {
   stopDirectorPlayback: () => void;
   seekDirectorTime: (timeSec: number) => void;
   setDirectorLoop: (loop: boolean) => void;
+  setDirectorFormat: (format: DirectorVideoFormat) => void;
   setDirectorResolution: (res: DirectorResolution) => void;
   setDirectorFps: (fps: DirectorFps) => void;
   setDirectorIncludeAudio: (include: boolean) => void;
@@ -279,10 +284,12 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
   directorActiveIndex: 0,
   directorPlaying: false,
   directorLoop: false,
+  directorFormat: isMp4RecordingSupported() ? 'mp4' : 'webm',
   directorResolution: '720p',
   directorFps: 30,
   directorIncludeAudio: false,
   recordingActive: false,
+  recordingFormat: 'mp4',
   recordingElapsedSec: 0,
   lastRecording: null,
 
@@ -689,6 +696,8 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
 
   setDirectorLoop: (loop) => set({ directorLoop: loop }),
 
+  setDirectorFormat: (format) => set({ directorFormat: format }),
+
   setDirectorResolution: (res) => set({ directorResolution: res }),
 
   setDirectorFps: (fps) => set({ directorFps: fps }),
@@ -699,6 +708,7 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
     const {
       sceneManager,
       directorKeyframes,
+      directorFormat,
       directorResolution,
       directorFps,
       directorIncludeAudio,
@@ -720,6 +730,7 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
     const started = sceneManager.startDirectorPlayback(directorKeyframes, {
       startTimeSec: 0,
       record: {
+        format: directorFormat,
         resolution: directorResolution,
         fps: directorFps,
         includeAudio: directorIncludeAudio,
@@ -727,8 +738,13 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
       },
     });
     if (started) {
+      const activeFmt = get().recordingFormat.toUpperCase();
       set({ directorPlaying: true, directorTimeSec: 0, recordingActive: true, recordingElapsedSec: 0 });
-      get().showToast(`⏺ 开始录制纯净 WebM 关键帧短片（${directorResolution} · ${directorFps}fps）`);
+      get().showToast(
+        activeFmt !== directorFormat.toUpperCase()
+          ? `⏺ 浏览器暂不支持原生 ${directorFormat.toUpperCase()}，已切换纯净 ${activeFmt} 关键帧短片录制（${directorResolution} · ${directorFps}fps）`
+          : `⏺ 开始录制纯净 ${activeFmt} 关键帧短片（${directorResolution} · ${directorFps}fps）`
+      );
     }
   },
 
@@ -736,6 +752,7 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
     const {
       sceneManager,
       recordingActive,
+      directorFormat,
       directorResolution,
       directorFps,
       directorIncludeAudio,
@@ -750,14 +767,20 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
       cosmosAudio.ensureStarted();
     }
     const ok = sceneManager.startFreeRecording({
+      format: directorFormat,
       resolution: directorResolution,
       fps: directorFps,
       includeAudio: directorIncludeAudio,
       filenamePrefix: `${scenarioId}-live`,
     });
     if (ok) {
+      const activeFmt = get().recordingFormat.toUpperCase();
       set({ recordingActive: true, recordingElapsedSec: 0 });
-      get().showToast(`⏺ 已开始纯净画布自由录屏（${directorResolution} · ${directorFps}fps）`);
+      get().showToast(
+        activeFmt !== directorFormat.toUpperCase()
+          ? `⏺ 浏览器暂不支持原生 ${directorFormat.toUpperCase()}，已切换纯净 ${activeFmt} 自由录屏（${directorResolution} · ${directorFps}fps）`
+          : `⏺ 已开始纯净画布 ${activeFmt} 自由录屏（${directorResolution} · ${directorFps}fps）`
+      );
     }
   },
 

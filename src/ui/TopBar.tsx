@@ -165,7 +165,7 @@ export function TopBar() {
         <button
           className={`hud-btn ${directorOpen || cameraMode === 'director' || recordingActive ? 'active' : ''}`}
           onClick={toggleDirectorOpen}
-          title="关键帧运镜脚本与纯净 WebM 视频录制 (K 记录机位)"
+          title="关键帧运镜脚本与纯净 MP4 / WebM 视频录制 (K 记录机位)"
         >
           {recordingActive ? <span className="rec-dot" /> : <Clapperboard size={14} />}
           {recordingActive ? '录制中' : '运镜'}
