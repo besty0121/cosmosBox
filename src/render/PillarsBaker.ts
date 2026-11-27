@@ -233,6 +233,31 @@ function createAtlasTarget(size: number, mipmaps: boolean): THREE.WebGLRenderTar
 }
 
 /**
+ * Copy baked FBO pixels into a CPU-backed DataTexture so Three.js always retains
+ * the RGBA8 dust volume & cloud noise even if FBO attachments are reclaimed or lost.
+ */
+function readTargetAsDataTexture(
+  renderer: THREE.WebGLRenderer,
+  target: THREE.WebGLRenderTarget,
+  size: number,
+  mipmaps: boolean
+): THREE.DataTexture {
+  const pixels = new Uint8Array(size * size * 4);
+  renderer.readRenderTargetPixels(target, 0, 0, size, size, pixels);
+
+  const tex = new THREE.DataTexture(pixels, size, size, THREE.RGBAFormat, THREE.UnsignedByteType);
+  tex.flipY = false;
+  tex.generateMipmaps = mipmaps;
+  tex.minFilter = mipmaps ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.wrapS = mipmaps ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;
+  tex.wrapT = mipmaps ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;
+  tex.colorSpace = THREE.NoColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/**
  * Bakes continuous 3D Pillars SDF + UV self-shadowing + vapor + HH atlas and seamless 2D filigree map
  * once on the GPU so runtime raymarching needs zero 3D Simplex math and stays crystal-smooth inside canyons.
  */
@@ -267,11 +292,13 @@ export function bakePillarsVolumeMaps(renderer: THREE.WebGLRenderer): PillarsVol
   renderer.setRenderTarget(volTarget);
   renderer.clear();
   renderer.render(bakeScene, bakeCam);
+  const volumeAtlas = readTargetAsDataTexture(renderer, volTarget, 1024, false);
 
   quad.material = cloudMat;
   renderer.setRenderTarget(cloudTarget);
   renderer.clear();
   renderer.render(bakeScene, bakeCam);
+  const cloudNoiseMap = readTargetAsDataTexture(renderer, cloudTarget, 256, true);
 
   renderer.setRenderTarget(prevTarget);
   renderer.autoClear = prevAutoClear;
@@ -279,13 +306,15 @@ export function bakePillarsVolumeMaps(renderer: THREE.WebGLRenderer): PillarsVol
   quadGeo.dispose();
   volMat.dispose();
   cloudMat.dispose();
+  volTarget.dispose();
+  cloudTarget.dispose();
 
   return {
-    volumeAtlas: volTarget.texture,
-    cloudNoiseMap: cloudTarget.texture,
+    volumeAtlas,
+    cloudNoiseMap,
     dispose: () => {
-      volTarget.dispose();
-      cloudTarget.dispose();
+      volumeAtlas.dispose();
+      cloudNoiseMap.dispose();
     },
   };
 }

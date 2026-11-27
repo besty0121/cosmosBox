@@ -76,9 +76,21 @@ export function BottomDock() {
                   <span
                     className="body-orb"
                     style={{
-                      background: tpl.category === 'black_hole' ? '#111' : tpl.color,
-                      color: tpl.category === 'black_hole' ? '#ff8b3d' : tpl.color,
-                      border: tpl.category === 'black_hole' ? '1.5px solid #ff8b3d' : 'none',
+                      background: tpl.isWormhole
+                        ? 'radial-gradient(circle, #183a64 25%, #5ce1ff 75%, #c58aff 100%)'
+                        : tpl.category === 'black_hole'
+                          ? '#111'
+                          : tpl.color,
+                      color: tpl.isWormhole
+                        ? '#76dcff'
+                        : tpl.category === 'black_hole'
+                          ? '#ff8b3d'
+                          : tpl.color,
+                      border: tpl.isWormhole
+                        ? '1.5px solid #76dcff'
+                        : tpl.category === 'black_hole'
+                          ? '1.5px solid #ff8b3d'
+                          : 'none',
                     }}
                   />
                   <span style={{ fontSize: 12, fontWeight: 600, color: '#eef4ff' }}>

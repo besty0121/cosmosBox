@@ -13,13 +13,22 @@ import { syncStarFromMass } from '../physics/stellar';
 import { stepThermodynamics } from '../physics/thermodynamics';
 import { lenVec3 } from '../physics/vec3';
 import {
+  ASTRO_TELESCOPE_PRESETS,
+  DEFAULT_ASTRO_SETTINGS,
+} from '../render/AstroPhotoPipeline';
+import {
   computeDirectorTotalDuration,
   parseDirectorScript,
   serializeDirectorScript,
 } from '../render/DirectorEngine';
 import { GraphicsQuality, SceneManager } from '../render/SceneManager';
 import { isMp4RecordingSupported } from '../render/VideoRecorder';
-import { SCENARIOS } from '../scenarios/presets';
+import {
+  createReturnWormholeBody,
+  getWormholeDestinationName,
+  SCENARIOS,
+  WORMHOLE_DESTINATIONS,
+} from '../scenarios/presets';
 import { SPAWN_TEMPLATES } from '../scenarios/templates';
 import {
   CosmosSaveData,
@@ -31,6 +40,9 @@ import {
   saveToLocal,
 } from '../storage/saveManager';
 import {
+  AstroPhotoSettings,
+  AstroStackStatus,
+  AstroTelescopePreset,
   BodySnapshot,
   CameraMode,
   CmeImpactEvent,
@@ -49,6 +61,7 @@ import {
   ScreenLabel,
   SupernovaEvent,
   TidalDisruptionEvent,
+  WormholeDestinationId,
 } from '../types/cosmos';
 
 interface CosmosState {
@@ -91,6 +104,14 @@ interface CosmosState {
   recordingFormat: DirectorVideoFormat;
   recordingElapsedSec: number;
   lastRecording: DirectorRecordingResult | null;
+  astroPhotoActive: boolean;
+  astroSettings: AstroPhotoSettings;
+  astroStackStatus: AstroStackStatus;
+  wormholeTransit: {
+    active: boolean;
+    destinationName: string;
+    phase: 'dive' | 'emerge';
+  } | null;
 
   bodies: BodySnapshot[];
   screenLabels: ScreenLabel[];
@@ -163,6 +184,16 @@ interface CosmosState {
   exportDirectorScriptJson: () => void;
   importDirectorScriptJson: (text: string) => boolean;
 
+  // Virtual Deep-Sky Astrophotography
+  toggleAstroPhoto: () => void;
+  setAstroPhotoActive: (active: boolean) => void;
+  selectAstroTelescope: (preset: AstroTelescopePreset) => void;
+  updateAstroSettings: (patch: Partial<AstroPhotoSettings>) => void;
+  startAstroStacking: () => void;
+  stopAstroStacking: () => void;
+  resetAstroStack: () => void;
+  exportAstroPhoto: () => void;
+
   selectBody: (id: string | null) => void;
   focusBody: (id: string | null, zoomCloser?: boolean) => void;
   enterSurfaceView: (id: string) => void;
@@ -200,10 +231,14 @@ interface CosmosState {
       nebulaSpectrumMode: NebulaSpectrumMode;
       nebulaIrPenetration: number;
       nebulaDensity: number;
+      wormholeThroatScale: number;
+      wormholeLength: number;
+      wormholeDestination: WormholeDestinationId;
       rotationHours: number;
       axialTiltDeg: number;
     }>
   ) => void;
+  traverseWormhole: (bodyId: string) => void;
   setAndromedaViewPreset: (preset: 'earth' | 'face_on' | 'edge_on' | 'core') => void;
   setPillarsViewPreset: (preset: 'classic' | 'canyon' | 'muse_side' | 'tips') => void;
   triggerBodySupernova: (id: string) => void;
@@ -240,11 +275,11 @@ function applyMassUpdate(
   const ratio = clampedMass / prevMass;
   body.mass = clampedMass;
 
-  if (body.category === 'black_hole') {
+  if (body.category === 'black_hole' && !body.isWormhole) {
     body.radius = schwarzschildRadius(body.mass);
   } else if (body.category === 'star') {
     syncStarFromMass(body);
-  } else if (body.category !== 'neutron_star') {
+  } else if (body.category !== 'neutron_star' && !body.isWormhole) {
     body.radius *= Math.cbrt(ratio);
     if (body.mass >= 0.075 * M_SUN) {
       body.category = 'star';
@@ -292,6 +327,17 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
   recordingFormat: 'mp4',
   recordingElapsedSec: 0,
   lastRecording: null,
+  astroPhotoActive: false,
+  astroSettings: { ...DEFAULT_ASTRO_SETTINGS },
+  astroStackStatus: {
+    stacking: false,
+    stackedFrames: 0,
+    targetFrames: DEFAULT_ASTRO_SETTINGS.targetFrames,
+    totalExposureSec: 0,
+    snrGain: 1,
+    completed: false,
+  },
+  wormholeTransit: null,
 
   bodies: [],
   screenLabels: [],
@@ -327,6 +373,9 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
 
     if (sceneManager.isVideoRecording()) {
       void sceneManager.stopVideoRecording();
+    }
+    if (get().astroPhotoActive) {
+      sceneManager.resetAstroStack();
     }
 
     const bodies = scenario.createBodies();
@@ -371,6 +420,14 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
       directorTotalSec: 0,
       directorActiveIndex: 0,
       directorPlaying: false,
+      astroStackStatus: {
+        stacking: false,
+        stackedFrames: 0,
+        targetFrames: get().astroSettings.targetFrames,
+        totalExposureSec: 0,
+        snrGain: 1,
+        completed: false,
+      },
       selectedBodyId: sceneManager.selectedBodyId,
       focusBodyId: sceneManager.focusBodyId,
       bodies: engine.getBodySnapshots(),
@@ -493,28 +550,115 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
 
   toggleHud: () => set((s) => ({ hudVisible: !s.hudVisible })),
 
-  toggleBodyList: () =>
-    set((s) => {
-      const next = !s.bodyListOpen;
-      return { bodyListOpen: next, ...(next ? { directorOpen: false } : {}) };
-    }),
+  toggleBodyList: () => {
+    const { bodyListOpen, astroPhotoActive, sceneManager } = get();
+    const next = !bodyListOpen;
+    if (next && astroPhotoActive) {
+      sceneManager?.setAstroPhotoActive(false);
+    }
+    set({
+      bodyListOpen: next,
+      ...(next ? { directorOpen: false, astroPhotoActive: false } : {}),
+    });
+  },
 
   setSaveModalOpen: (open) => {
     if (open) set({ savedUniverses: listLocalSaves() });
     set({ saveModalOpen: open });
   },
 
-  toggleDirectorOpen: () =>
-    set((s) => {
-      const next = !s.directorOpen;
-      return { directorOpen: next, ...(next ? { bodyListOpen: false } : {}) };
-    }),
+  toggleDirectorOpen: () => {
+    const { directorOpen, astroPhotoActive, sceneManager } = get();
+    const next = !directorOpen;
+    if (next && astroPhotoActive) {
+      sceneManager?.setAstroPhotoActive(false);
+    }
+    set({
+      directorOpen: next,
+      ...(next ? { bodyListOpen: false, astroPhotoActive: false } : {}),
+    });
+  },
 
-  setDirectorOpen: (open) =>
-    set(() => ({
+  setDirectorOpen: (open) => {
+    const { astroPhotoActive, sceneManager } = get();
+    if (open && astroPhotoActive) {
+      sceneManager?.setAstroPhotoActive(false);
+    }
+    set({
       directorOpen: open,
-      ...(open ? { bodyListOpen: false } : {}),
-    })),
+      ...(open ? { bodyListOpen: false, astroPhotoActive: false } : {}),
+    });
+  },
+
+  toggleAstroPhoto: () => {
+    get().setAstroPhotoActive(!get().astroPhotoActive);
+  },
+
+  setAstroPhotoActive: (active) => {
+    const { sceneManager, astroSettings } = get();
+    sceneManager?.setAstroPhotoActive(active, astroSettings);
+    set({
+      astroPhotoActive: active,
+      ...(active ? { bodyListOpen: false, directorOpen: false } : {}),
+    });
+    if (active) {
+      get().showToast('🔭 已进入虚拟深空天文摄影台（可切换光学目镜与长曝光堆栈）');
+    }
+  },
+
+  selectAstroTelescope: (preset) => {
+    const spec = ASTRO_TELESCOPE_PRESETS[preset];
+    get().updateAstroSettings({
+      telescope: preset,
+      focalLengthMm: spec.defaultFocalMm,
+      eyepieceMask: spec.defaultEyepieceMask,
+      spikeStrength: spec.defaultSpikeStrength,
+    });
+    get().showToast(`🔭 已切换光学系统：${spec.label}（${spec.defaultFocalMm}mm）`);
+  },
+
+  updateAstroSettings: (patch) => {
+    const { sceneManager, astroSettings } = get();
+    const next: AstroPhotoSettings = { ...astroSettings, ...patch };
+    sceneManager?.updateAstroPhotoSettings(next);
+    set({ astroSettings: next });
+  },
+
+  startAstroStacking: () => {
+    const { sceneManager, astroSettings } = get();
+    if (!sceneManager) return;
+    sceneManager.startAstroStacking();
+    get().showToast(
+      `📸 开始长曝光堆栈（目标 ${astroSettings.targetFrames} 帧 · ISO ${astroSettings.iso}）`
+    );
+  },
+
+  stopAstroStacking: () => {
+    get().sceneManager?.stopAstroStacking();
+    get().showToast('🖼 已定格堆栈主底片，可在「暗房出片」微调拉伸曲线');
+  },
+
+  resetAstroStack: () => {
+    get().sceneManager?.resetAstroStack();
+    get().showToast('↺ 已恢复实时取景预览');
+  },
+
+  exportAstroPhoto: () => {
+    const { sceneManager, scenarioId, selectedBodyId, engine, astroStackStatus } = get();
+    if (!sceneManager) return;
+    const scenario = SCENARIOS.find((s) => s.id === scenarioId) ?? SCENARIOS[0];
+    const targetName =
+      (selectedBodyId ? engine?.getBody(selectedBodyId)?.name : null) ??
+      scenario.defaultFocusBodyName ??
+      null;
+    const res = sceneManager.exportAstroPhoto(scenario.name, targetName);
+    cosmosAudio.playSpawnPing();
+    get().showToast(
+      astroStackStatus.stackedFrames > 0
+        ? `📷 已出片（${astroStackStatus.stackedFrames} 帧堆栈）：${res.filename}`
+        : `📷 已出片（实时光学观测）：${res.filename}`
+    );
+  },
 
   addDirectorKeyframe: (name) => {
     const { sceneManager, directorKeyframes } = get();
@@ -1067,6 +1211,13 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
     if (patch.nebulaSpectrumMode !== undefined) body.nebulaSpectrumMode = patch.nebulaSpectrumMode;
     if (patch.nebulaIrPenetration !== undefined) body.nebulaIrPenetration = patch.nebulaIrPenetration;
     if (patch.nebulaDensity !== undefined) body.nebulaDensity = patch.nebulaDensity;
+    if (patch.wormholeThroatScale !== undefined) {
+      body.wormholeThroatScale = patch.wormholeThroatScale;
+    }
+    if (patch.wormholeLength !== undefined) body.wormholeLength = patch.wormholeLength;
+    if (patch.wormholeDestination !== undefined) {
+      body.wormholeDestination = patch.wormholeDestination;
+    }
     if (patch.rotationHours !== undefined) {
       body.rotationPeriod = Math.max(0.5, patch.rotationHours) * HOUR;
     }
@@ -1075,6 +1226,54 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
     }
     stepThermodynamics(engine.bodies, 0, false);
     set({ bodies: engine.getBodySnapshots() });
+  },
+
+  traverseWormhole: (bodyId) => {
+    const { engine, sceneManager } = get();
+    if (!engine || !sceneManager) return;
+    const body = engine.getBody(bodyId);
+    if (!body || !body.isWormhole) return;
+
+    const destId: WormholeDestinationId = body.wormholeDestination ?? 'pillars_of_creation';
+    const originScenarioId = get().scenarioId;
+    const destLabel = getWormholeDestinationName(destId);
+
+    sceneManager.startWormholeTransit(
+      bodyId,
+      destLabel,
+      () => {
+        get().loadScenario(destId);
+
+        const validOrigin = WORMHOLE_DESTINATIONS.some(
+          (d) => d.id === originScenarioId && d.id !== destId
+        );
+        const returnDest: WormholeDestinationId = validOrigin
+          ? (originScenarioId as WormholeDestinationId)
+          : destId === 'wormhole_saturn'
+            ? 'pillars_of_creation'
+            : 'wormhole_saturn';
+
+        if (destId === 'wormhole_saturn') {
+          const existingWh = engine.bodies.find((b) => b.alive && b.isWormhole);
+          if (existingWh) {
+            existingWh.wormholeDestination = returnDest;
+          }
+        } else {
+          const placement = sceneManager.computeReturnWormholePlacement();
+          const returnPortal = createReturnWormholeBody(
+            returnDest,
+            placement.position,
+            placement.velocity
+          );
+          engine.addBody(returnPortal);
+        }
+
+        set({ bodies: engine.getBodySnapshots() });
+      },
+      () => {
+        get().showToast(`🌀 虫洞跃迁完成：已抵达 ${destLabel}（双向返回星门已就绪）`);
+      }
+    );
   },
 
   triggerBodySupernova: (id) => {
@@ -1165,6 +1364,9 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
     }));
     engine.autoThermo = save.autoThermo;
     engine.loadBodies(clonedBodies, save.timeScale, save.simTime);
+    if (get().astroPhotoActive) {
+      sceneManager.resetAstroStack();
+    }
     const primaryName = clonedBodies[0]?.name;
     sceneManager.frameScenario(3.4, primaryName);
     set({
@@ -1180,6 +1382,14 @@ export const useCosmosStore = create<CosmosState>((set, get) => ({
       directorTotalSec: 0,
       directorActiveIndex: 0,
       directorPlaying: false,
+      astroStackStatus: {
+        stacking: false,
+        stackedFrames: 0,
+        targetFrames: get().astroSettings.targetFrames,
+        totalExposureSec: 0,
+        snrGain: 1,
+        completed: false,
+      },
       selectedBodyId: sceneManager.selectedBodyId,
       focusBodyId: sceneManager.focusBodyId,
       bodies: engine.getBodySnapshots(),

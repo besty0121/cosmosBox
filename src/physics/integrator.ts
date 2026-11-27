@@ -36,7 +36,16 @@ export function computeAccelerations(bodies: CelestialBody[]): number {
         (bi.isGravitationalLens && bj.isLensSource) ||
         (bj.isGravitationalLens && bi.isLensSource) ||
         (bi.galaxyType && bj.galaxyType) ||
-        (bi.nebulaType && bj.nebulaType)
+        (bi.nebulaType && bj.nebulaType) ||
+        ((bi.isWormhole || bj.isWormhole) &&
+          (bi.galaxyType ||
+            bj.galaxyType ||
+            bi.nebulaType ||
+            bj.nebulaType ||
+            bi.isGravitationalLens ||
+            bj.isGravitationalLens ||
+            bi.category === 'black_hole' ||
+            bj.category === 'black_hole'))
       ) {
         continue;
       }

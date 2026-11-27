@@ -31,6 +31,7 @@ import {
   createTexturedEarthMaterial,
   createTexturedGasGiantMaterial,
   createTexturedRockyMaterial,
+  createWormholeMaterial,
   MAX_OCCLUDERS,
   MAX_STAR_LIGHTS,
 } from './shaders/bodyShaders';
@@ -41,6 +42,7 @@ const SHARED_SPHERE_GEO = new THREE.SphereGeometry(1, 64, 48);
 const SHARED_CLOUD_GEO = new THREE.SphereGeometry(1.012, 48, 36);
 const SHARED_ATMO_GEO = new THREE.SphereGeometry(1.058, 40, 32);
 const SHARED_BH_VOLUME_GEO = new THREE.SphereGeometry(15.0, 36, 24);
+const SHARED_WORMHOLE_GEO = new THREE.SphereGeometry(7.5, 48, 36);
 const SHARED_PICK_GEO = new THREE.SphereGeometry(1, 10, 8);
 const SHARED_CORONA_GEO = new THREE.PlaneGeometry(1, 1);
 const MAX_TRAIL_VERTS = 360;
@@ -682,6 +684,7 @@ export interface BodyVisual {
   lastFlareDirWorld?: THREE.Vector3;
   lastFlareAge?: number;
   blackHoleVolume?: THREE.Mesh;
+  wormholeVolume?: THREE.Mesh;
   pulsarJets?: THREE.Group;
   cometComa?: THREE.Mesh;
   cometIonTail?: THREE.Mesh;
@@ -707,6 +710,9 @@ export function computeVisualRadius(
   if (body.nebulaType === 'ngc6611_cluster') return 3.2;
 
   const realRadius = Math.max(body.radius * METERS_TO_SCENE, 0.00015);
+  if (body.isWormhole) {
+    return scaleMode === 'real' ? Math.max(realRadius, 1.2) : 2.35;
+  }
   if (scaleMode === 'real') {
     return realRadius;
   }
@@ -759,6 +765,8 @@ export class BodyRenderer {
   private occRadPool = new Array(MAX_OCCLUDERS).fill(0);
   private occAtmoPool = new Array(MAX_OCCLUDERS).fill(0);
   private bodyLookup = new Map<string, CelestialBody>();
+  private transitWormholeId: string | null = null;
+  private transitWormholeBoost = 0;
 
   constructor(scene: THREE.Scene, textures: PlanetTextures) {
     this.scene = scene;
@@ -839,6 +847,11 @@ export class BodyRenderer {
 
   public getVisual(id: string): BodyVisual | undefined {
     return this.visuals.get(id);
+  }
+
+  public setWormholeTransitState(bodyId: string | null, boost: number): void {
+    this.transitWormholeId = bodyId;
+    this.transitWormholeBoost = boost;
   }
 
   public sync(
@@ -1343,6 +1356,65 @@ export class BodyRenderer {
         bhMat.uniforms.uModelRotMatrix.value.setFromMatrix4(vis.blackHoleVolume.matrixWorld);
       }
 
+      if (vis.wormholeVolume) {
+        vis.wormholeVolume.scale.setScalar(r);
+        vis.root.updateMatrixWorld(true);
+        const whMat = vis.wormholeVolume.material as THREE.ShaderMaterial;
+        whMat.uniforms.uTime.value = elapsedTime;
+        whMat.uniforms.uThroatRadius.value = body.wormholeThroatScale ?? 1.55;
+        whMat.uniforms.uThroatLength.value = body.wormholeLength ?? 1.0;
+        const destId = body.wormholeDestination ?? 'pillars_of_creation';
+        whMat.uniforms.uDestMode.value =
+          destId === 'pillars_of_creation'
+            ? 0.0
+            : destId === 'andromeda_galaxy'
+              ? 1.0
+              : destId === 'black_hole_tde'
+                ? 2.0
+                : 3.0;
+        whMat.uniforms.uTransitBoost.value =
+          body.id === this.transitWormholeId ? this.transitWormholeBoost : 0.0;
+        whMat.uniforms.uInvModelMatrix.value.copy(vis.wormholeVolume.matrixWorld).invert();
+        whMat.uniforms.uModelRotMatrix.value.setFromMatrix4(vis.wormholeVolume.matrixWorld);
+
+        // Reflect nearest bright neighbor planet/star onto outer Einstein ring
+        let bestScore = 0;
+        let bestNeighbor: CelestialBody | null = null;
+        let bestNeighborVis: BodyVisual | null = null;
+        let bestDist = 0;
+        for (let j = 0; j < bodies.length; j++) {
+          const other = bodies[j];
+          if (!other.alive || other.id === body.id || other.isWormhole) continue;
+          const oVis = this.visuals.get(other.id);
+          if (!oVis) continue;
+          const dist = vis.renderedPos.distanceTo(oVis.renderedPos);
+          if (dist < 1e-3 || dist > 80) continue;
+          const effR = oVis.renderedRadius * (other.hasRings ? 2.1 : 1.15);
+          const ang = effR / dist;
+          if (ang > bestScore) {
+            bestScore = ang;
+            bestNeighbor = other;
+            bestNeighborVis = oVis;
+            bestDist = dist;
+          }
+        }
+        if (bestNeighbor && bestNeighborVis && bestDist > 1e-3) {
+          this.tempOffset
+            .subVectors(bestNeighborVis.renderedPos, vis.renderedPos)
+            .normalize()
+            .transformDirection(whMat.uniforms.uInvModelMatrix.value)
+            .normalize();
+          whMat.uniforms.uNeighborDir.value.copy(this.tempOffset);
+          whMat.uniforms.uNeighborAngRad.value = Math.atan2(
+            bestNeighborVis.renderedRadius * (bestNeighbor.hasRings ? 2.1 : 1.15),
+            bestDist
+          );
+          whMat.uniforms.uNeighborColor.value.set(bestNeighbor.color);
+        } else {
+          whMat.uniforms.uNeighborAngRad.value = 0.0;
+        }
+      }
+
       if (vis.pulsarJets) {
         vis.pulsarJets.scale.setScalar(r);
         vis.pulsarJets.rotation.y = elapsedTime * 5.2;
@@ -1466,9 +1538,11 @@ export class BodyRenderer {
           ? r * 2.2
           : body.nebulaType
             ? r * 3.5
-            : body.category === 'black_hole'
-              ? r * 4.2
-              : r * 1.45,
+            : body.isWormhole
+              ? r * (body.wormholeThroatScale ?? 1.55) * 1.2
+              : body.category === 'black_hole'
+                ? r * 4.2
+                : r * 1.45,
         camDist * 0.022
       );
       vis.pickMesh.scale.setScalar(pickRadius);
@@ -1502,18 +1576,25 @@ export class BodyRenderer {
         syncStarLights(vis.surfaceMaterial, occCount);
       }
 
+      const whSpeedSq =
+        body.velocity.x * body.velocity.x +
+        body.velocity.y * body.velocity.y +
+        body.velocity.z * body.velocity.z;
       vis.trailLine.visible =
         showTrails &&
         body.trail.length > 1 &&
         !body.isLensSource &&
         !body.isGravitationalLens &&
         !body.galaxyType &&
-        !body.nebulaType;
+        !body.nebulaType &&
+        !(body.isWormhole && whSpeedSq < 1);
       if (vis.trailLine.visible) {
         const trail = body.trail;
         const count = Math.min(trail.length, MAX_TRAIL_VERTS);
         const startIdx = trail.length - count;
-        this.tempColor.set(body.category === 'black_hole' ? '#ff8b3d' : body.color);
+        this.tempColor.set(
+          body.isWormhole ? '#68d8ff' : body.category === 'black_hole' ? '#ff8b3d' : body.color
+        );
 
         for (let i = 0; i < count; i++) {
           const pt = trail[startIdx + i];
@@ -1549,7 +1630,11 @@ export class BodyRenderer {
       !selectedBody?.nebulaType
     ) {
       const camDist = Math.max(0.1, camera.position.distanceTo(selectedVis.renderedPos));
-      const baseMult = selectedVis.category === 'black_hole' ? 3.8 : 1.14;
+      const baseMult = selectedBody?.isWormhole
+        ? (selectedBody.wormholeThroatScale ?? 1.55) * 1.18
+        : selectedVis.category === 'black_hole'
+          ? 3.8
+          : 1.14;
       const ringScale = Math.max(selectedVis.renderedRadius * baseMult, camDist * 0.022);
       // Smoothly fade reticle away when zoomed very close to inspect auroras / prominences / surface detail!
       const angularHalfSize = (ringScale * 1.26) / camDist;
@@ -1579,7 +1664,13 @@ export class BodyRenderer {
     let surfaceMaterial: THREE.Material;
     let useEarthClouds = false;
 
-    if (body.isGravitationalLens || body.isLensSource || body.galaxyType || body.nebulaType) {
+    if (
+      body.isGravitationalLens ||
+      body.isLensSource ||
+      body.galaxyType ||
+      body.nebulaType ||
+      body.isWormhole
+    ) {
       surfaceMaterial = new THREE.MeshBasicMaterial({ visible: false });
     } else if (body.volcanicIo) {
       surfaceMaterial = createIoSurfaceMaterial(body, this.textures);
@@ -1896,11 +1987,20 @@ export class BodyRenderer {
     }
 
     let blackHoleVolume: THREE.Mesh | undefined;
-    if (body.category === 'black_hole' && !body.isGravitationalLens) {
+    if (body.category === 'black_hole' && !body.isGravitationalLens && !body.isWormhole) {
       const bhMat = createBlackHoleLensingMaterial(body, this.textures);
       blackHoleVolume = new THREE.Mesh(SHARED_BH_VOLUME_GEO, bhMat);
       blackHoleVolume.renderOrder = 3;
       tiltGroup.add(blackHoleVolume);
+    }
+
+    let wormholeVolume: THREE.Mesh | undefined;
+    if (body.isWormhole) {
+      const whMat = createWormholeMaterial(body, this.textures);
+      wormholeVolume = new THREE.Mesh(SHARED_WORMHOLE_GEO, whMat);
+      wormholeVolume.renderOrder = 3;
+      wormholeVolume.frustumCulled = false;
+      tiltGroup.add(wormholeVolume);
     }
 
     let pulsarJets: THREE.Group | undefined;
@@ -2010,6 +2110,7 @@ export class BodyRenderer {
       prominenceGroup,
       prominenceSlots,
       blackHoleVolume,
+      wormholeVolume,
       pulsarJets,
       cometComa,
       cometIonTail,
@@ -2053,6 +2154,7 @@ export class BodyRenderer {
       });
     }
     if (vis.blackHoleVolume) (vis.blackHoleVolume.material as THREE.Material).dispose();
+    if (vis.wormholeVolume) (vis.wormholeVolume.material as THREE.Material).dispose();
     if (vis.pulsarJets) {
       vis.pulsarJets.children.forEach((child) => {
         const m = child as THREE.Mesh;

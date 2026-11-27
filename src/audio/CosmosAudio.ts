@@ -309,6 +309,68 @@ class CosmosAudioEngine {
     this.playNoiseBurst(0.9, 1400, 0.14);
   }
 
+  /**
+   * Interstellar-inspired relativistic Morris-Thorne wormhole throat transit sweep
+   */
+  public playWormholeTransit(): void {
+    if (this.muted) return;
+    this.ensureStarted();
+    if (!this.ctx || !this.masterGain) return;
+
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+
+    // 1. Deep sub-bass gravity dive -> throat resonance -> emergence settle (2.5s synced to 3D transit)
+    const sub = ctx.createOscillator();
+    const subGain = ctx.createGain();
+    sub.type = 'triangle';
+    sub.frequency.setValueAtTime(46, now);
+    sub.frequency.exponentialRampToValueAtTime(132, now + 1.35);
+    sub.frequency.exponentialRampToValueAtTime(34, now + 2.50);
+
+    subGain.gain.setValueAtTime(0.001, now);
+    subGain.gain.linearRampToValueAtTime(0.46, now + 1.25);
+    subGain.gain.exponentialRampToValueAtTime(0.0008, now + 2.55);
+
+    sub.connect(subGain);
+    subGain.connect(this.masterGain);
+    sub.start(now);
+    sub.stop(now + 2.60);
+
+    // 2. Shimmering exotic-matter harmonic crystal chord across the throat
+    const chord = [220, 329.63, 493.88, 659.25];
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(420, now);
+    filter.frequency.exponentialRampToValueAtTime(2600, now + 1.35);
+    filter.frequency.exponentialRampToValueAtTime(360, now + 2.50);
+    filter.Q.value = 1.8;
+
+    const chordGain = ctx.createGain();
+    chordGain.gain.setValueAtTime(0.0008, now);
+    chordGain.gain.linearRampToValueAtTime(0.28, now + 1.18);
+    chordGain.gain.exponentialRampToValueAtTime(0.0006, now + 2.52);
+    filter.connect(chordGain);
+    chordGain.connect(this.masterGain);
+
+    for (let i = 0; i < chord.length; i++) {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = i % 2 === 0 ? 'sine' : 'triangle';
+      osc.frequency.setValueAtTime(chord[i], now);
+      osc.frequency.exponentialRampToValueAtTime(chord[i] * 1.08, now + 1.35);
+      osc.frequency.exponentialRampToValueAtTime(chord[i], now + 2.50);
+      g.gain.value = 0.065 / (0.25 + i * 0.2);
+      osc.connect(g);
+      g.connect(filter);
+      osc.start(now);
+      osc.stop(now + 2.56);
+    }
+
+    // 3. Relativistic plasma whoosh
+    this.playNoiseBurst(2.40, 1950, 0.18);
+  }
+
   private playNoiseBurst(duration: number, cutoffHz: number, volume: number): void {
     if (!this.ctx || !this.masterGain) return;
     const ctx = this.ctx;

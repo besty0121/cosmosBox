@@ -17,8 +17,14 @@ import {
   R_SUN,
   schwarzschildRadius,
 } from '../physics/constants';
+import { computeCircularOrbitVelocity } from '../physics/integrator';
 import { nextBodyId } from '../physics/SimulationEngine';
-import { CelestialBody, ScenarioDefinition } from '../types/cosmos';
+import {
+  CelestialBody,
+  ScenarioDefinition,
+  Vec3,
+  WormholeDestinationId,
+} from '../types/cosmos';
 
 interface OrbitSpec {
   semiMajorAU: number;
@@ -1840,6 +1846,180 @@ function createPillarsOfCreation(): CelestialBody[] {
   return [pillars, ngc6611];
 }
 
+export const WORMHOLE_DESTINATIONS: {
+  id: WormholeDestinationId;
+  label: string;
+  shortLabel: string;
+}[] = [
+  { id: 'pillars_of_creation', label: '🏛️ 创生之柱（鹰状星云 M16）', shortLabel: '创生之柱 M16' },
+  { id: 'andromeda_galaxy', label: '🌌 仙女座星系 (M31)', shortLabel: '仙女座 M31' },
+  { id: 'black_hole_tde', label: '🕳️ 卡冈图雅黑洞视界', shortLabel: '卡冈图雅黑洞' },
+  { id: 'wormhole_saturn', label: '🪐 土星环轨道星门', shortLabel: '土星环轨道' },
+];
+
+export function getWormholeDestinationName(dest: WormholeDestinationId): string {
+  return WORMHOLE_DESTINATIONS.find((d) => d.id === dest)?.label ?? '深空奇观';
+}
+
+export function createReturnWormholeBody(
+  destination: WormholeDestinationId,
+  position: Vec3,
+  velocity: Vec3
+): CelestialBody {
+  const short = WORMHOLE_DESTINATIONS.find((d) => d.id === destination)?.shortLabel ?? '源宇宙';
+  return {
+    id: nextBodyId('wormhole'),
+    name: `返回星门 · 通往${short}`,
+    category: 'black_hole',
+    isWormhole: true,
+    wormholeDestination: destination,
+    wormholeThroatScale: 1.55,
+    wormholeLength: 1.0,
+    mass: 1e18,
+    radius: 2.4e7,
+    position: { ...position },
+    velocity: { ...velocity },
+    acceleration: { x: 0, y: 0, z: 0 },
+    temperature: 0,
+    luminosity: 0,
+    albedo: 0,
+    greenhouse: 0,
+    waterFraction: 0,
+    atmosphereDensity: 0,
+    impactHeat: 0,
+    rotationPeriod: 1000 * DAY,
+    rotationAngle: 0,
+    axialTilt: 0,
+    color: '#76dcff',
+    secondaryColor: '#c89bff',
+    atmosphereColor: '#000000',
+    seed: 9042,
+    trail: [{ ...position }],
+    alive: true,
+  };
+}
+
+function createWormholeSaturn(): CelestialBody[] {
+  const sun: CelestialBody = {
+    id: nextBodyId('sun'),
+    name: '太阳',
+    category: 'star',
+    mass: M_SUN,
+    radius: R_SUN,
+    position: { x: 0, y: 0, z: 0 },
+    velocity: { x: 0, y: 0, z: 0 },
+    acceleration: { x: 0, y: 0, z: 0 },
+    temperature: 5778,
+    luminosity: L_SUN,
+    albedo: 0,
+    greenhouse: 0,
+    waterFraction: 0,
+    atmosphereDensity: 0,
+    impactHeat: 0,
+    rotationPeriod: 25.4 * DAY,
+    rotationAngle: 0,
+    axialTilt: (7.25 * Math.PI) / 180,
+    color: '#fff1c4',
+    secondaryColor: '#ff9d2e',
+    atmosphereColor: '#ffbe44',
+    seed: 612.5,
+    trail: [{ x: 0, y: 0, z: 0 }],
+    alive: true,
+  };
+
+  // Phase 210 deg illuminates Saturn's camera-facing 3/4 gibbous hemisphere with crisp ring shadows
+  const saturn = makeOrbitingBody(
+    {
+      name: '土星',
+      category: 'gas_giant',
+      mass: M_SATURN,
+      radius: R_SATURN,
+      temperature: 134,
+      luminosity: 0,
+      albedo: 0.342,
+      greenhouse: 0.15,
+      waterFraction: 0,
+      atmosphereDensity: 1.2,
+      impactHeat: 0,
+      rotationPeriod: 10.7 * HOUR,
+      axialTilt: (26.73 * Math.PI) / 180,
+      color: '#e6cf9b',
+      secondaryColor: '#b3955d',
+      atmosphereColor: '#f3dfb4',
+      hasRings: true,
+      ringInner: 1.28,
+      ringOuter: 2.35,
+      ringColor: '#dfd0ad',
+    },
+    sun,
+    { semiMajorAU: 9.582, eccentricity: 0.01, inclinationDeg: 0, phaseDeg: 210 }
+  );
+
+  const titan = makeOrbitingBody(
+    {
+      name: '土卫六 (泰坦)',
+      category: 'moon',
+      mass: 1.3452e23,
+      radius: 2.5747e6,
+      temperature: 94,
+      luminosity: 0,
+      albedo: 0.22,
+      greenhouse: 0.12,
+      waterFraction: 0,
+      atmosphereDensity: 1.45,
+      impactHeat: 0,
+      rotationPeriod: 15.95 * DAY,
+      axialTilt: 0.01,
+      color: '#dfb267',
+      secondaryColor: '#b8823c',
+      atmosphereColor: '#f5b856',
+    },
+    saturn,
+    { semiMajorAU: 0.0115, eccentricity: 0.02, inclinationDeg: 2.0, phaseDeg: 135 }
+  );
+
+  const whPos: Vec3 = {
+    x: saturn.position.x + 0.088 * AU,
+    y: saturn.position.y - 0.012 * AU,
+    z: saturn.position.z + 0.056 * AU,
+  };
+  const whVel = computeCircularOrbitVelocity(whPos, saturn);
+
+  const wormhole: CelestialBody = {
+    id: nextBodyId('wormhole'),
+    name: '卡冈图雅星门虫洞',
+    category: 'black_hole',
+    isWormhole: true,
+    wormholeDestination: 'pillars_of_creation',
+    wormholeThroatScale: 1.65,
+    wormholeLength: 1.0,
+    mass: 1e18,
+    radius: 2.4e7,
+    position: whPos,
+    velocity: whVel,
+    acceleration: { x: 0, y: 0, z: 0 },
+    temperature: 0,
+    luminosity: 0,
+    albedo: 0,
+    greenhouse: 0,
+    waterFraction: 0,
+    atmosphereDensity: 0,
+    impactHeat: 0,
+    rotationPeriod: 1000 * DAY,
+    rotationAngle: 0,
+    axialTilt: 0,
+    color: '#76dcff',
+    secondaryColor: '#c89bff',
+    atmosphereColor: '#000000',
+    parentId: saturn.id,
+    seed: 9001,
+    trail: [{ ...whPos }],
+    alive: true,
+  };
+
+  return centerMomentum([sun, saturn, titan, wormhole]);
+}
+
 function createEmptySandbox(): CelestialBody[] {
   return [];
 }
@@ -1893,6 +2073,17 @@ export const SCENARIOS: ScenarioDefinition[] = [
     defaultFocusBodyName: '创生之柱 (鹰状星云 M16)',
     defaultCameraAngles: { azimuthDeg: 0, elevationDeg: 0 },
     createBodies: createPillarsOfCreation,
+  },
+  {
+    id: 'wormhole_saturn',
+    name: '🌀 可穿越虫洞：土星—深空星门',
+    description:
+      '基于莫里斯-索恩 (Morris-Thorne) 无视界虫洞度规实时光线追踪：晶球中央直接透视彼岸宇宙的 360° 弯曲星海，外缘折射本宇宙土星环与银河爱因斯坦环；点击「一键穿越」或驾驶飞船 (F) 亲身穿喉直抵创生之柱 / 仙女座并支持双向返航！',
+    defaultTimeScale: 0.35 * DAY,
+    defaultCameraDistanceAU: 0.142,
+    defaultFocusBodyName: '卡冈图雅星门虫洞',
+    defaultCameraAngles: { azimuthDeg: 0, elevationDeg: 10 },
+    createBodies: createWormholeSaturn,
   },
   {
     id: 'earth_aurora',

@@ -42,7 +42,9 @@ export function resolveCollisions(
         a.galaxyType ||
         b.galaxyType ||
         a.nebulaType ||
-        b.nebulaType
+        b.nebulaType ||
+        a.isWormhole ||
+        b.isWormhole
       ) {
         continue;
       }
@@ -278,7 +280,8 @@ export function resolveRocheTidalTearing(
       victim.isLensSource ||
       victim.isGravitationalLens ||
       victim.galaxyType ||
-      victim.nebulaType
+      victim.nebulaType ||
+      victim.isWormhole
     ) {
       continue;
     }
@@ -286,7 +289,7 @@ export function resolveRocheTidalTearing(
     for (let j = 0; j < n; j++) {
       if (i === j) continue;
       const primary = bodies[j];
-      if (!primary.alive || primary.galaxyType || primary.nebulaType) continue;
+      if (!primary.alive || primary.galaxyType || primary.nebulaType || primary.isWormhole) continue;
       // Stars torn by black holes are handled by gradual TDE spaghettification stream in SimulationEngine
       if (victim.category === 'star' && primary.category === 'black_hole') continue;
       // Primary must be significantly heavier to tear victim apart

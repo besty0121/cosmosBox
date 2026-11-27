@@ -43,9 +43,21 @@ export function BodyListDrawer() {
                 <span
                   className="body-orb"
                   style={{
-                    background: b.category === 'black_hole' ? '#111' : b.color,
-                    color: b.category === 'black_hole' ? '#ff8b3d' : b.color,
-                    border: b.category === 'black_hole' ? '1.5px solid #ff8b3d' : 'none',
+                    background: b.isWormhole
+                      ? 'radial-gradient(circle, #183a64 25%, #5ce1ff 75%, #c58aff 100%)'
+                      : b.category === 'black_hole'
+                        ? '#111'
+                        : b.color,
+                    color: b.isWormhole
+                      ? '#76dcff'
+                      : b.category === 'black_hole'
+                        ? '#ff8b3d'
+                        : b.color,
+                    border: b.isWormhole
+                      ? '1.5px solid #76dcff'
+                      : b.category === 'black_hole'
+                        ? '1.5px solid #ff8b3d'
+                        : 'none',
                   }}
                 />
                 <div style={{ minWidth: 0 }}>

@@ -12,12 +12,15 @@ import {
   Plus,
   RefreshCw,
   Square,
+  Telescope,
   X,
 } from 'lucide-react';
 import { cosmosAudio } from './audio/CosmosAudio';
 import { SimulationEngine } from './physics/SimulationEngine';
+import { ASTRO_TELESCOPE_PRESETS, focalLengthToFovDeg } from './render/AstroPhotoPipeline';
 import { FLIGHT_GEARS, FLIGHT_GEAR_LABELS, SceneManager } from './render/SceneManager';
 import { useCosmosStore } from './store/useCosmosStore';
+import { AstroPhotoPanel } from './ui/AstroPhotoPanel';
 import { BodyLabelsOverlay } from './ui/BodyLabelsOverlay';
 import { BodyListDrawer } from './ui/BodyListDrawer';
 import { BottomDock } from './ui/BottomDock';
@@ -43,6 +46,10 @@ export function App() {
   const recordingActive = useCosmosStore((s) => s.recordingActive);
   const recordingFormat = useCosmosStore((s) => s.recordingFormat);
   const recordingElapsedSec = useCosmosStore((s) => s.recordingElapsedSec);
+  const astroPhotoActive = useCosmosStore((s) => s.astroPhotoActive);
+  const astroSettings = useCosmosStore((s) => s.astroSettings);
+  const astroStackStatus = useCosmosStore((s) => s.astroStackStatus);
+  const wormholeTransit = useCosmosStore((s) => s.wormholeTransit);
   const toast = useCosmosStore((s) => s.toast);
   const toggleHud = useCosmosStore((s) => s.toggleHud);
   const captureScreenshot = useCosmosStore((s) => s.captureScreenshot);
@@ -50,6 +57,8 @@ export function App() {
   const shiftFlightGear = useCosmosStore((s) => s.shiftFlightGear);
   const toggleDirectorPause = useCosmosStore((s) => s.toggleDirectorPause);
   const stopRecording = useCosmosStore((s) => s.stopRecording);
+  const setAstroPhotoActive = useCosmosStore((s) => s.setAstroPhotoActive);
+  const exportAstroPhoto = useCosmosStore((s) => s.exportAstroPhoto);
   const exitSpecialCameraMode = useCosmosStore((s) => s.exitSpecialCameraMode);
 
   useEffect(() => {
@@ -144,6 +153,15 @@ export function App() {
           recordingElapsedSec: elapsedSec,
         });
       },
+      onAstroStackTelemetry: (status) => {
+        useCosmosStore.setState({ astroStackStatus: status });
+      },
+      onWormholeAutoTraverse: (bodyId) => {
+        useCosmosStore.getState().traverseWormhole(bodyId);
+      },
+      onWormholeTransitChange: (state) => {
+        useCosmosStore.setState({ wormholeTransit: state });
+      },
     });
 
     useCosmosStore.getState().attachRuntime(engine, sceneManager);
@@ -175,6 +193,8 @@ export function App() {
           st.exitSpecialCameraMode();
         } else if (st.saveModalOpen) {
           st.setSaveModalOpen(false);
+        } else if (st.astroPhotoActive) {
+          st.setAstroPhotoActive(false);
         } else if (st.directorOpen) {
           st.setDirectorOpen(false);
         } else if (st.spawnActive) {
@@ -194,6 +214,8 @@ export function App() {
         st.toggleCinematicTour();
       } else if (e.key === 'f' || e.key === 'F') {
         st.toggleFreeFlight();
+      } else if (e.key === 't' || e.key === 'T') {
+        st.toggleAstroPhoto();
       } else if ((e.key === 'k' || e.key === 'K') && st.directorOpen) {
         st.addDirectorKeyframe();
       } else if (e.key === 'v' || e.key === 'V') {
@@ -220,12 +242,26 @@ export function App() {
         className={`cosmos-viewport ${spawnActive ? 'spawn-cursor' : ''}`}
       />
 
+      {wormholeTransit?.active && (
+        <div className="wormhole-transit-hud">
+          <div className="glass-panel wormhole-transit-pill">
+            <span style={{ fontSize: 16 }}>🌀</span>
+            <span>
+              {wormholeTransit.phase === 'dive'
+                ? `正在穿越虫洞喉部 → ${wormholeTransit.destinationName}`
+                : `已抵达彼岸宇宙 · ${wormholeTransit.destinationName}`}
+            </span>
+          </div>
+        </div>
+      )}
+
       {hudVisible ? (
         <div className="hud-layer">
           <BodyLabelsOverlay />
           <TopBar />
           <BodyListDrawer />
           <DirectorPanel />
+          <AstroPhotoPanel />
           <InspectorPanel />
           <BottomDock />
           <SaveLoadModal />
@@ -366,6 +402,41 @@ export function App() {
             </div>
           )}
 
+          {!recordingActive && cameraMode !== 'director' && astroPhotoActive && (
+            <div className="glass-panel camera-mode-banner">
+              <Telescope size={15} color="#5ce1ff" />
+              <span>
+                {ASTRO_TELESCOPE_PRESETS[astroSettings.telescope].label} ·{' '}
+                <strong className="mono">
+                  {astroSettings.focalLengthMm}mm / FOV{' '}
+                  {focalLengthToFovDeg(astroSettings.focalLengthMm).toFixed(0)}°
+                </strong>{' '}
+                ·{' '}
+                {astroStackStatus.stacking
+                  ? `堆栈 ${astroStackStatus.stackedFrames}/${astroStackStatus.targetFrames} · SNR ×${astroStackStatus.snrGain.toFixed(1)}`
+                  : astroStackStatus.completed
+                    ? `已定格暗房 (${astroStackStatus.stackedFrames} 帧 · SNR ×${astroStackStatus.snrGain.toFixed(1)})`
+                    : '实时光学取景'}
+              </span>
+              <button
+                className="hud-btn"
+                style={{ height: 26, fontSize: 11.5 }}
+                onClick={exportAstroPhoto}
+              >
+                <Camera size={12} />
+                保存大片
+              </button>
+              <button
+                className="hud-btn amber active"
+                style={{ height: 26, fontSize: 11.5 }}
+                onClick={() => setAstroPhotoActive(false)}
+              >
+                <X size={12} />
+                退出摄影 (T)
+              </button>
+            </div>
+          )}
+
           {toast && <div className="cosmos-toast">{toast}</div>}
 
           <div className="glass-panel controls-hint">
@@ -377,7 +448,7 @@ export function App() {
             ) : (
               <>
                 <div>左键旋转 · 右键平移 · 滚轮缩放</div>
-                <div>空格 暂停 · G 时空网格 · V 地表 · F 飞船 · C 巡航 · K 录机位 · H 隐藏</div>
+                <div>空格 暂停 · G 网格 · V 地表 · F 飞船 · C 巡航 · K 机位 · T 摄影 · H 隐藏</div>
               </>
             )}
           </div>

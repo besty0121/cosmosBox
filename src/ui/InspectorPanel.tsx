@@ -5,6 +5,8 @@ import {
   Focus,
   Leaf,
   Lock,
+  Navigation,
+  Rocket,
   Sparkles,
   Trash2,
   Unlock,
@@ -21,6 +23,7 @@ import {
   R_EARTH,
   R_SUN,
 } from '../physics/constants';
+import { getWormholeDestinationName, WORMHOLE_DESTINATIONS } from '../scenarios/presets';
 import { useCosmosStore } from '../store/useCosmosStore';
 import { BodyCategory } from '../types/cosmos';
 
@@ -79,6 +82,7 @@ export function InspectorPanel() {
   const setAndromedaViewPreset = useCosmosStore((s) => s.setAndromedaViewPreset);
   const setPillarsViewPreset = useCosmosStore((s) => s.setPillarsViewPreset);
   const toggleFreeFlight = useCosmosStore((s) => s.toggleFreeFlight);
+  const traverseWormhole = useCosmosStore((s) => s.traverseWormhole);
 
   const body = selectedBodyId ? bodies.find((b) => b.id === selectedBodyId) ?? null : null;
 
@@ -132,9 +136,21 @@ export function InspectorPanel() {
           <span
             className="body-orb"
             style={{
-              background: body.category === 'black_hole' ? '#111' : body.color,
-              color: body.category === 'black_hole' ? '#ff8b3d' : body.color,
-              border: body.category === 'black_hole' ? '1.5px solid #ff8b3d' : 'none',
+              background: body.isWormhole
+                ? 'radial-gradient(circle, #183a64 25%, #5ce1ff 75%, #c58aff 100%)'
+                : body.category === 'black_hole'
+                  ? '#111'
+                  : body.color,
+              color: body.isWormhole
+                ? '#76dcff'
+                : body.category === 'black_hole'
+                  ? '#ff8b3d'
+                  : body.color,
+              border: body.isWormhole
+                ? '1.5px solid #76dcff'
+                : body.category === 'black_hole'
+                  ? '1.5px solid #ff8b3d'
+                  : 'none',
             }}
           />
           <div style={{ minWidth: 0 }}>
@@ -150,13 +166,15 @@ export function InspectorPanel() {
               {body.name}
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-              {body.galaxyType === 'andromeda'
-                ? '旋涡星系 · SA(s)b (NGC 224)'
-                : body.galaxyType === 'dwarf_elliptical_compact'
-                  ? '致密矮椭圆伴星系 · cE2 (NGC 221)'
-                  : body.galaxyType === 'dwarf_elliptical_diffuse'
-                    ? '矮椭圆伴星系 · dE5 pec (NGC 205)'
-                    : (body.spectralClass ?? CATEGORY_LABELS[body.category])}
+              {body.isWormhole
+                ? '可穿越虫洞 · Morris-Thorne 时空门'
+                : body.galaxyType === 'andromeda'
+                  ? '旋涡星系 · SA(s)b (NGC 224)'
+                  : body.galaxyType === 'dwarf_elliptical_compact'
+                    ? '致密矮椭圆伴星系 · cE2 (NGC 221)'
+                    : body.galaxyType === 'dwarf_elliptical_diffuse'
+                      ? '矮椭圆伴星系 · dE5 pec (NGC 205)'
+                      : (body.spectralClass ?? CATEGORY_LABELS[body.category])}
             </div>
           </div>
         </div>
@@ -230,7 +248,7 @@ export function InspectorPanel() {
           </div>
         )}
 
-        {!body.galaxyType && body.category === 'rocky' && body.habitability > 0 && (
+        {!body.galaxyType && !body.isWormhole && body.category === 'rocky' && body.habitability > 0 && (
           <div className="status-banner habitable">
             <Leaf size={13} />
             <span>行星宜居指数：{body.habitability}%</span>
@@ -254,7 +272,7 @@ export function InspectorPanel() {
             <Focus size={13} />
             拉近观察
           </button>
-          {!body.galaxyType && body.category !== 'star' && body.category !== 'black_hole' && (
+          {!body.galaxyType && !body.isWormhole && body.category !== 'star' && body.category !== 'black_hole' && (
             <button
               className="hud-btn active"
               onClick={() => enterSurfaceView(body.id)}
@@ -275,7 +293,28 @@ export function InspectorPanel() {
         </div>
 
         {/* Core telemetry readout */}
-        {body.galaxyType ? (
+        {body.isWormhole ? (
+          <div className="stat-grid">
+            <div className="stat-card">
+              <div className="stat-label">时空度规</div>
+              <div className="stat-value mono">Morris-Thorne</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">事件视界</div>
+              <div className="stat-value" style={{ color: '#70f7c8' }}>无（双向可穿越）</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">喉部半径 b₀</div>
+              <div className="stat-value mono">{(body.wormholeThroatScale ?? 1.55).toFixed(2)}</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">连接彼岸星域</div>
+              <div className="stat-value" style={{ fontSize: 11.5 }}>
+                {getWormholeDestinationName(body.wormholeDestination ?? 'pillars_of_creation')}
+              </div>
+            </div>
+          </div>
+        ) : body.galaxyType ? (
           <div className="stat-grid">
             <div className="stat-card">
               <div className="stat-label">总质量</div>
@@ -364,7 +403,7 @@ export function InspectorPanel() {
         )}
 
         {/* Mass & Radius Exact Editor */}
-        {!body.galaxyType && (
+        {!body.galaxyType && !body.isWormhole && (
         <>
         <div className="control-section">
           <div className="section-title">质量与尺寸（精确编辑）</div>
@@ -1048,6 +1087,102 @@ export function InspectorPanel() {
               </div>
               <div style={{ fontSize: 11, opacity: 0.72, marginTop: 6, lineHeight: 1.45 }}>
                 拖动鼠标环绕透镜可实时弯折背景星系弧；调节上方质量（×0.5 / ×2）可实时缩放爱因斯坦半径 θₑ ∝ √M。
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Traversable Morris-Thorne Wormhole Portal Controls */}
+        {body.isWormhole && (() => {
+          const curDest = body.wormholeDestination ?? 'pillars_of_creation';
+          const throatScale = body.wormholeThroatScale ?? 1.55;
+          const throatLength = body.wormholeLength ?? 1.0;
+
+          return (
+            <div className="control-section">
+              <div className="section-title">🌀 虫洞时空传送门控制台</div>
+
+              <div className="section-title" style={{ marginTop: 4 }}>彼岸连接目标宇宙</div>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: 6,
+                  marginBottom: 10,
+                }}
+              >
+                {WORMHOLE_DESTINATIONS.map((dest) => (
+                  <button
+                    key={dest.id}
+                    className={`hud-btn ${curDest === dest.id ? 'active' : ''}`}
+                    style={{ justifyContent: 'center', fontSize: 11.5 }}
+                    onClick={() => updateBodyProps(body.id, { wormholeDestination: dest.id })}
+                  >
+                    {`${dest.label.split(' ')[0]} ${dest.shortLabel}`}
+                  </button>
+                ))}
+              </div>
+
+              <div className="slider-row">
+                <div className="slider-header">
+                  <span>虫洞喉部半径 (b₀)</span>
+                  <span className="mono" style={{ color: '#76dcff' }}>
+                    {throatScale.toFixed(2)} rₛ
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  className="cosmos-slider"
+                  min={0.9}
+                  max={2.3}
+                  step={0.05}
+                  value={throatScale}
+                  onChange={(e) =>
+                    updateBodyProps(body.id, { wormholeThroatScale: parseFloat(e.target.value) })
+                  }
+                />
+              </div>
+
+              <div className="slider-row">
+                <div className="slider-header">
+                  <span>喉管长度与爱因斯坦环曲率 (a)</span>
+                  <span className="mono" style={{ color: '#c89bff' }}>
+                    {throatLength.toFixed(2)}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  className="cosmos-slider"
+                  min={0.15}
+                  max={2.8}
+                  step={0.05}
+                  value={throatLength}
+                  onChange={(e) =>
+                    updateBodyProps(body.id, { wormholeLength: parseFloat(e.target.value) })
+                  }
+                />
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginTop: 8 }}>
+                <button
+                  className="hud-btn wormhole-cta"
+                  onClick={() => traverseWormhole(body.id)}
+                >
+                  <Rocket size={14} />
+                  🚀 一键穿越虫洞
+                </button>
+                <button
+                  className="hud-btn"
+                  style={{ width: '100%', justifyContent: 'center' }}
+                  onClick={() => toggleFreeFlight()}
+                >
+                  <Navigation size={13} />
+                  🛸 驾驶飞船亲身穿喉 (F)
+                </button>
+              </div>
+
+              <div style={{ fontSize: 11, opacity: 0.72, marginTop: 7, lineHeight: 1.45 }}>
+                拖动鼠标可 360° 透视晶球彼岸星域；在飞船模式 (`F`) 中直接飞入喉部将自动触发时空跃迁并在抵达点生成双向返回星门。
               </div>
             </div>
           );

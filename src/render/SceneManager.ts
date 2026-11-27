@@ -18,6 +18,8 @@ import {
 } from '../physics/integrator';
 import { SimulationEngine } from '../physics/SimulationEngine';
 import {
+  AstroPhotoSettings,
+  AstroStackStatus,
   CameraMode,
   CelestialBody,
   CmeImpactEvent,
@@ -36,6 +38,11 @@ import {
   TidalDisruptionEvent,
   Vec3,
 } from '../types/cosmos';
+import {
+  AstroPhotoPipeline,
+  DEFAULT_ASTRO_SETTINGS,
+  focalLengthToFovDeg,
+} from './AstroPhotoPipeline';
 import { BodyRenderer } from './BodyRenderer';
 import { DebrisRenderer } from './DebrisRenderer';
 import {
@@ -52,6 +59,7 @@ import { ScienceOverlays } from './overlays/ScienceOverlays';
 import { SpacetimeGrid } from './overlays/SpacetimeGrid';
 import { textureAtlas } from './TextureAtlas';
 import { VideoRecorder } from './VideoRecorder';
+import { WormholeTunnelFX } from './WormholeTunnelFX';
 
 export type GraphicsQuality = 'high' | 'fast';
 
@@ -103,6 +111,11 @@ export interface SceneCallbacks {
     activeFormat?: DirectorVideoFormat,
     fallbackFrom?: DirectorVideoFormat
   ) => void;
+  onAstroStackTelemetry?: (status: AstroStackStatus) => void;
+  onWormholeAutoTraverse?: (bodyId: string) => void;
+  onWormholeTransitChange?: (
+    state: { active: boolean; destinationName: string; phase: 'dive' | 'emerge' } | null
+  ) => void;
 }
 
 export class SceneManager {
@@ -122,6 +135,7 @@ export class SceneManager {
   private highEnergyRenderer: HighEnergyRenderer;
   private spacetimeGrid: SpacetimeGrid;
   private scienceOverlays: ScienceOverlays;
+  private wormholeTunnelFx: WormholeTunnelFX;
   private starfield: THREE.Points;
 
   // State synced from store
@@ -179,6 +193,34 @@ export class SceneManager {
   private recordingSizeLock: { width: number; height: number } | null = null;
   private recordingActualFormat: DirectorVideoFormat = 'mp4';
   private videoRecorder = new VideoRecorder();
+
+  // Virtual Deep-Sky Astrophotography Pipeline (lazy GPU allocation)
+  private astroPhotoPipeline = new AstroPhotoPipeline();
+  private astroPhotoActive = false;
+  private astroSettings: AstroPhotoSettings = { ...DEFAULT_ASTRO_SETTINGS };
+  private astroStacking = false;
+  private astroStackCompleted = false;
+  private astroSavedFov = 48;
+
+  // Traversable Wormhole Transit state
+  private wormholeTransit: {
+    bodyId: string;
+    destinationName: string;
+    elapsed: number;
+    diveDuration: number;
+    emergeDuration: number;
+    travel: number;
+    swapped: boolean;
+    wasFlight: boolean;
+    startPos: THREE.Vector3;
+    startFov: number;
+    emergeStartPos: THREE.Vector3;
+    emergeTargetPos: THREE.Vector3;
+    onMidpointSwap: () => void;
+    onComplete: () => void;
+  } | null = null;
+  private wormholeCooldown = 0;
+  private inWormholeMidpoint = false;
 
   // Floating origin in SI meters (tracks focused body for zero float jitter)
   private originMeters: Vec3 = { x: 0, y: 0, z: 0 };
@@ -268,6 +310,7 @@ export class SceneManager {
     this.highEnergyRenderer = new HighEnergyRenderer(this.scene);
     this.spacetimeGrid = new SpacetimeGrid(this.scene);
     this.scienceOverlays = new ScienceOverlays(this.scene);
+    this.wormholeTunnelFx = new WormholeTunnelFX(this.scene, textures.milkyWay);
 
     // Spawn reference plane & preview meshes
     this.spawnPlaneGrid = new THREE.PolarGridHelper(900, 16, 10, 96, 0x2a6c9e, 0x133352);
@@ -329,6 +372,12 @@ export class SceneManager {
     focusBodyName?: string,
     cameraAngles?: { azimuthDeg: number; elevationDeg: number }
   ): void {
+    if (!this.inWormholeMidpoint && this.wormholeTransit) {
+      this.wormholeTransit = null;
+      this.wormholeTunnelFx.setActive(false);
+      this.bodyRenderer.setWormholeTransitState(null, 0);
+      this.callbacks.onWormholeTransitChange?.(null);
+    }
     this.exitSpecialCameraMode(false);
     this.originMeters = { x: 0, y: 0, z: 0 };
     if (focusBodyName) {
@@ -936,9 +985,140 @@ export class SceneManager {
     this.applyDirectorSample(this.directorTimeSec);
   }
 
+  public setAstroPhotoActive(active: boolean, settings?: AstroPhotoSettings): void {
+    if (active === this.astroPhotoActive && !settings) return;
+    if (active) {
+      if (
+        this.cameraMode === 'surface' ||
+        this.cameraMode === 'cinematic' ||
+        this.cameraMode === 'director'
+      ) {
+        this.exitSpecialCameraMode(true);
+      }
+      this.setSpawnMode(false, null, this.launchMode);
+      if (!this.astroPhotoActive) {
+        this.astroSavedFov = this.camera.fov;
+      }
+      this.astroPhotoActive = true;
+      if (settings) {
+        this.astroSettings = { ...settings };
+      }
+      this.astroStacking = false;
+      this.astroStackCompleted = false;
+      this.astroPhotoPipeline.resetStack();
+      const targetFov = focalLengthToFovDeg(this.astroSettings.focalLengthMm);
+      if (Math.abs(this.camera.fov - targetFov) > 0.05) {
+        this.camera.fov = targetFov;
+        this.camera.updateProjectionMatrix();
+      }
+      this.callbacks.onAstroStackTelemetry?.(
+        this.astroPhotoPipeline.getStatus(this.astroSettings, false, false)
+      );
+    } else {
+      this.astroPhotoActive = false;
+      this.astroStacking = false;
+      this.astroStackCompleted = false;
+      this.controls.enabled = this.cameraMode === 'orbit';
+      if (Math.abs(this.camera.fov - this.astroSavedFov) > 0.05) {
+        this.camera.fov = this.astroSavedFov;
+        this.camera.updateProjectionMatrix();
+      }
+      this.astroPhotoPipeline.resetStack();
+      this.callbacks.onAstroStackTelemetry?.(
+        this.astroPhotoPipeline.getStatus(this.astroSettings, false, false)
+      );
+    }
+  }
+
+  public updateAstroPhotoSettings(next: AstroPhotoSettings): void {
+    const prev = this.astroSettings;
+    const opticalChanged =
+      prev.telescope !== next.telescope ||
+      prev.filter !== next.filter ||
+      prev.focalLengthMm !== next.focalLengthMm ||
+      prev.iso !== next.iso ||
+      prev.subExposureSec !== next.subExposureSec ||
+      prev.bortle !== next.bortle ||
+      Math.abs(prev.defocus - next.defocus) > 1e-4 ||
+      Math.abs(prev.spikeStrength - next.spikeStrength) > 1e-4 ||
+      next.targetFrames < this.astroPhotoPipeline.getStackedFrames();
+
+    this.astroSettings = { ...next };
+
+    if (this.astroPhotoActive && prev.focalLengthMm !== next.focalLengthMm) {
+      this.camera.fov = focalLengthToFovDeg(next.focalLengthMm);
+      this.camera.updateProjectionMatrix();
+    }
+
+    if (opticalChanged && (this.astroStacking || this.astroStackCompleted)) {
+      this.resetAstroStack();
+    } else if (this.astroStacking) {
+      this.controls.enabled = !next.mountLock;
+    } else if (this.astroStackCompleted) {
+      this.callbacks.onAstroStackTelemetry?.(
+        this.astroPhotoPipeline.getStatus(this.astroSettings, false, true)
+      );
+    }
+  }
+
+  public startAstroStacking(): void {
+    if (!this.astroPhotoActive) return;
+    this.astroPhotoPipeline.resetStack();
+    this.astroStacking = true;
+    this.astroStackCompleted = false;
+    this.controls.enabled = !this.astroSettings.mountLock;
+    this.callbacks.onAstroStackTelemetry?.(
+      this.astroPhotoPipeline.getStatus(this.astroSettings, true, false)
+    );
+  }
+
+  public stopAstroStacking(): void {
+    const hasFrames = this.astroPhotoPipeline.getStackedFrames() > 0;
+    this.astroStacking = false;
+    this.astroStackCompleted = hasFrames;
+    this.controls.enabled = this.cameraMode === 'orbit';
+    this.callbacks.onAstroStackTelemetry?.(
+      this.astroPhotoPipeline.getStatus(this.astroSettings, false, hasFrames)
+    );
+  }
+
+  public resetAstroStack(): void {
+    this.astroStacking = false;
+    this.astroStackCompleted = false;
+    this.controls.enabled = this.cameraMode === 'orbit';
+    this.astroPhotoPipeline.resetStack();
+    this.callbacks.onAstroStackTelemetry?.(
+      this.astroPhotoPipeline.getStatus(this.astroSettings, false, false)
+    );
+  }
+
+  public exportAstroPhoto(
+    scenarioName: string,
+    targetName: string | null
+  ): { filename: string; width: number; height: number } {
+    const status = this.astroPhotoPipeline.getStatus(
+      this.astroSettings,
+      this.astroStacking,
+      this.astroStackCompleted
+    );
+    return this.astroPhotoPipeline.exportPhotoPng(
+      this.renderer,
+      this.scene,
+      this.camera,
+      this.elapsedTime,
+      {
+        targetTitle: targetName,
+        scenarioName,
+        settings: this.astroSettings,
+        status,
+      }
+    );
+  }
+
   private getCinematicPlaylist(): CelestialBody[] {
     const alive = this.engine.bodies.filter((b) => b.alive);
     const priority = (b: CelestialBody) => {
+      if (b.isWormhole) return 10;
       if (b.category === 'black_hole') return 10;
       if (b.category === 'comet') return 9;
       if (b.name.includes('地球') || b.name.includes('三体行星')) return 8;
@@ -1123,6 +1303,188 @@ export class SceneManager {
       this.camera.position.set(0, 0, 0);
       this.focusBodyId = null;
     }
+
+    // Traversable wormhole throat proximity trigger during Free-Flight
+    if (!this.wormholeTransit && this.wormholeCooldown <= 0) {
+      for (const b of this.engine.bodies) {
+        if (!b.alive || !b.isWormhole) continue;
+        const vis = this.bodyRenderer.getVisual(b.id);
+        if (!vis) continue;
+        const triggerR = vis.renderedRadius * (b.wormholeThroatScale ?? 1.55) * 1.12;
+        if (this.camera.position.distanceTo(vis.renderedPos) < triggerR) {
+          this.callbacks.onWormholeAutoTraverse?.(b.id);
+          break;
+        }
+      }
+    }
+  }
+
+  public startWormholeTransit(
+    bodyId: string,
+    destinationName: string,
+    onMidpointSwap: () => void,
+    onComplete: () => void
+  ): boolean {
+    if (this.wormholeTransit) return false;
+    if (this.astroPhotoActive) {
+      this.setAstroPhotoActive(false);
+    }
+
+    const wasFlight = this.cameraMode === 'flight';
+    const startPos = this.camera.position.clone();
+    const startFov = this.camera.fov;
+    this.flightKeys.clear();
+    this.flightVelocity.set(0, 0, 0);
+    this.controls.enabled = false;
+
+    this.wormholeTransit = {
+      bodyId,
+      destinationName,
+      elapsed: 0,
+      diveDuration: 1.35,
+      emergeDuration: 1.15,
+      travel: 0,
+      swapped: false,
+      wasFlight,
+      startPos,
+      startFov,
+      emergeStartPos: new THREE.Vector3(),
+      emergeTargetPos: new THREE.Vector3(),
+      onMidpointSwap,
+      onComplete,
+    };
+
+    cosmosAudio.playWormholeTransit();
+    this.wormholeTunnelFx.setActive(true);
+    this.callbacks.onWormholeTransitChange?.({
+      active: true,
+      destinationName,
+      phase: 'dive',
+    });
+    return true;
+  }
+
+  public computeReturnWormholePlacement(): { position: Vec3; velocity: Vec3 } {
+    this.camera.updateMatrixWorld();
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion).normalize();
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion).normalize();
+
+    const targetDist = Math.max(24, this.camera.position.distanceTo(this.controls.target));
+    const placeDist = Math.max(22, Math.min(64, targetDist * 0.30));
+
+    const scenePos = this.camera.position
+      .clone()
+      .addScaledVector(fwd, placeDist)
+      .addScaledVector(right, -placeDist * 0.50)
+      .addScaledVector(up, -placeDist * 0.08);
+
+    const focusBody = this.engine.getBody(this.focusBodyId);
+    return {
+      position: {
+        x: this.originMeters.x + scenePos.x * SCENE_TO_METERS,
+        y: this.originMeters.y + scenePos.y * SCENE_TO_METERS,
+        z: this.originMeters.z + scenePos.z * SCENE_TO_METERS,
+      },
+      velocity: focusBody ? { ...focusBody.velocity } : { x: 0, y: 0, z: 0 },
+    };
+  }
+
+  private updateWormholeTransit(dt: number): void {
+    const tr = this.wormholeTransit;
+    if (!tr) return;
+
+    tr.elapsed += dt;
+    const dDur = tr.diveDuration;
+    const eDur = tr.emergeDuration;
+
+    const dMid = (tr.elapsed - dDur) / 0.13;
+    const flash = Math.exp(-dMid * dMid);
+
+    if (tr.elapsed < dDur) {
+      const t = Math.min(1, tr.elapsed / dDur);
+      const warp = Math.pow(t, 1.45);
+      tr.travel += dt * (0.26 + 1.95 * warp);
+      const opacity = Math.min(1, tr.elapsed / 0.25);
+
+      const eased = t * t * (3 - 2 * t);
+      const vis = this.bodyRenderer.getVisual(tr.bodyId);
+      const target = vis ? vis.renderedPos : this.controls.target;
+      this.camera.position.lerpVectors(tr.startPos, target, eased * 0.84);
+      this.camera.lookAt(target);
+      this.camera.fov = THREE.MathUtils.lerp(tr.startFov, 82, eased);
+      this.camera.updateProjectionMatrix();
+      this.bodyRenderer.setWormholeTransitState(tr.bodyId, Math.min(1, t * 1.15));
+      this.wormholeTunnelFx.sync(this.camera, tr.travel, warp, opacity, flash);
+      return;
+    }
+
+    if (!tr.swapped) {
+      tr.swapped = true;
+      this.bodyRenderer.setWormholeTransitState(null, 0);
+      this.inWormholeMidpoint = true;
+      try {
+        tr.onMidpointSwap();
+      } finally {
+        this.inWormholeMidpoint = false;
+      }
+
+      this.controls.enabled = false;
+      tr.emergeTargetPos.copy(this.camera.position);
+      const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
+      const pull = Math.min(48, tr.emergeTargetPos.length() * 0.32);
+      // Place emergeStartPos behind arrival target so camera flies FORWARD out of the throat
+      tr.emergeStartPos.copy(tr.emergeTargetPos).addScaledVector(fwd, -pull);
+      this.camera.position.copy(tr.emergeStartPos);
+      this.camera.lookAt(this.controls.target);
+      this.camera.fov = 82;
+      this.camera.updateProjectionMatrix();
+
+      const t2 = Math.min(1, (tr.elapsed - dDur) / eDur);
+      const warp = Math.pow(Math.max(0, 1 - t2), 1.65);
+      tr.travel += dt * (0.26 + 1.95 * warp);
+      const opacity = Math.pow(Math.max(0, 1 - t2), 1.35);
+      this.wormholeTunnelFx.sync(this.camera, tr.travel, warp, opacity, flash);
+
+      this.callbacks.onWormholeTransitChange?.({
+        active: true,
+        destinationName: tr.destinationName,
+        phase: 'emerge',
+      });
+      return;
+    }
+
+    if (tr.elapsed < dDur + eDur) {
+      const t2 = Math.min(1, (tr.elapsed - dDur) / eDur);
+      const warp = Math.pow(Math.max(0, 1 - t2), 1.65);
+      tr.travel += dt * (0.26 + 1.95 * warp);
+      const opacity = Math.pow(Math.max(0, 1 - t2), 1.35);
+
+      const easedOut = 1 - Math.pow(1 - t2, 3);
+      this.camera.position.lerpVectors(tr.emergeStartPos, tr.emergeTargetPos, easedOut);
+      this.camera.lookAt(this.controls.target);
+      this.camera.fov = THREE.MathUtils.lerp(82, 48, easedOut);
+      this.camera.updateProjectionMatrix();
+      this.wormholeTunnelFx.sync(this.camera, tr.travel, warp, opacity, flash);
+      return;
+    }
+
+    this.camera.position.copy(tr.emergeTargetPos);
+    this.camera.lookAt(this.controls.target);
+    this.camera.fov = 48;
+    this.camera.updateProjectionMatrix();
+
+    this.wormholeTunnelFx.setActive(false);
+    this.wormholeCooldown = 3.5;
+    this.wormholeTransit = null;
+    if (tr.wasFlight) {
+      this.startFreeFlight();
+    } else {
+      this.controls.enabled = true;
+      this.controls.update();
+    }
+    this.callbacks.onWormholeTransitChange?.(null);
+    tr.onComplete();
   }
 
   public setGraphicsQuality(quality: GraphicsQuality): void {
@@ -1143,10 +1505,27 @@ export class SceneManager {
       Math.max(1, Math.floor(width / 2)),
       Math.max(1, Math.floor(height / 2))
     );
+    if (this.astroPhotoPipeline.resize(this.renderer) && this.astroPhotoActive) {
+      this.resetAstroStack();
+    }
   }
 
   public captureScreenshot(): void {
-    if (this.graphicsQuality === 'fast') {
+    if (this.astroPhotoActive) {
+      const renderMode = this.astroStacking
+        ? 'stack'
+        : this.astroStackCompleted
+          ? 'frozen'
+          : 'live';
+      this.astroPhotoPipeline.renderFrame(
+        this.renderer,
+        this.scene,
+        this.camera,
+        this.astroSettings,
+        renderMode,
+        this.elapsedTime
+      );
+    } else if (this.graphicsQuality === 'fast') {
       this.renderer.render(this.scene, this.camera);
     } else {
       this.composer.render();
@@ -1187,11 +1566,13 @@ export class SceneManager {
                   ? 34.0
               : body.isLensSource
                 ? 6.2
-                : body.hasRings
-                  ? 5.0
-                  : body.category === 'black_hole'
-                    ? 14.5
-                    : 3.2;
+                : body.isWormhole
+                  ? 9.6
+                  : body.hasRings
+                    ? 5.0
+                    : body.category === 'black_hole'
+                      ? 14.5
+                      : 3.2;
       const desiredDist = Math.max(r * mult, this.scaleMode === 'real' ? r * 3.8 : 2.6);
       const dir = new THREE.Vector3();
       const srcBody = body.isGravitationalLens
@@ -1887,7 +2268,27 @@ export class SceneManager {
       Math.max(1, Math.floor(width / 2)),
       Math.max(1, Math.floor(height / 2))
     );
-    if (this.graphicsQuality === 'fast') {
+    if (this.astroPhotoPipeline.resize(this.renderer) && this.astroPhotoActive) {
+      if (this.astroStacking || this.astroStackCompleted) {
+        this.astroStacking = false;
+        this.astroStackCompleted = false;
+        this.controls.enabled = this.cameraMode === 'orbit';
+        this.astroPhotoPipeline.resetStack();
+        this.callbacks.onAstroStackTelemetry?.(
+          this.astroPhotoPipeline.getStatus(this.astroSettings, false, false)
+        );
+      }
+    }
+    if (this.astroPhotoActive) {
+      this.astroPhotoPipeline.renderFrame(
+        this.renderer,
+        this.scene,
+        this.camera,
+        this.astroSettings,
+        this.astroStackCompleted ? 'frozen' : 'live',
+        this.elapsedTime
+      );
+    } else if (this.graphicsQuality === 'fast') {
       this.renderer.render(this.scene, this.camera);
     } else {
       this.composer.render();
@@ -1977,6 +2378,9 @@ export class SceneManager {
     const dt = Math.min((now - this.lastFrameTime) / 1000, 0.05);
     this.lastFrameTime = now;
     this.elapsedTime += dt;
+    if (this.wormholeCooldown > 0) {
+      this.wormholeCooldown = Math.max(0, this.wormholeCooldown - dt);
+    }
 
     // 1. Step N-body simulation, collisions, Roche tearing, thermodynamics & stellar evolution
     const events = this.engine.step(dt);
@@ -1999,8 +2403,10 @@ export class SceneManager {
       this.callbacks.onCmeImpact(ci);
     }
 
-    // 2. Camera mode update (Surface / Cinematic / 6-DOF Flight / Keyframe Director / Orbit)
-    if (this.cameraMode === 'surface') {
+    // 2. Camera mode update (Transit / Surface / Cinematic / 6-DOF Flight / Keyframe Director / Orbit)
+    if (this.wormholeTransit) {
+      this.updateWormholeTransit(dt);
+    } else if (this.cameraMode === 'surface') {
       this.updateSurfaceCamera();
     } else if (this.cameraMode === 'cinematic') {
       this.updateCinematicCamera(dt);
@@ -2049,7 +2455,7 @@ export class SceneManager {
       this.camera,
       this.scaleMode,
       this.showTrails,
-      this.cameraMode === 'orbit' ? this.selectedBodyId : null,
+      this.cameraMode === 'orbit' && !this.astroPhotoActive ? this.selectedBodyId : null,
       this.elapsedTime,
       this.engine.cmeWaves,
       this.graphicsQuality
@@ -2089,8 +2495,29 @@ export class SceneManager {
     this.updateSpawnPreview();
     this.updateShockwaves(dt);
 
-    // 5. Render (half-res HDR Bloom in 'high', direct ultra-fast render in 'fast')
-    if (this.graphicsQuality === 'fast') {
+    // 5. Render (Astrophotography pipeline when active, half-res HDR Bloom in 'high', direct in 'fast')
+    if (this.astroPhotoActive) {
+      const renderMode = this.astroStacking
+        ? 'stack'
+        : this.astroStackCompleted
+          ? 'frozen'
+          : 'live';
+      const status = this.astroPhotoPipeline.renderFrame(
+        this.renderer,
+        this.scene,
+        this.camera,
+        this.astroSettings,
+        renderMode,
+        this.elapsedTime
+      );
+      if (this.astroStacking && status.completed) {
+        this.astroStacking = false;
+        this.astroStackCompleted = true;
+        this.controls.enabled = this.cameraMode === 'orbit';
+        cosmosAudio.playSpawnPing();
+        this.callbacks.onAstroStackTelemetry?.(status);
+      }
+    } else if (this.graphicsQuality === 'fast') {
       this.renderer.render(this.scene, this.camera);
     } else {
       this.composer.render();
@@ -2120,20 +2547,22 @@ export class SceneManager {
             name: b.name,
             x: sx,
             y: sy,
-            color: b.category === 'black_hole' ? '#ff9640' : b.color,
+            color: b.isWormhole ? '#76dcff' : b.category === 'black_hole' ? '#ff9640' : b.color,
             selected: b.id === this.selectedBodyId,
             subtitle:
-              b.galaxyType === 'andromeda'
-                ? '旋涡星系 SA(s)b'
-                : b.galaxyType
-                  ? '矮椭圆伴星系'
-                  : b.nebulaType === 'pillars_of_creation'
-                    ? '冷分子云 · 创生之柱'
-                    : b.nebulaType === 'ngc6611_cluster'
-                      ? 'O/B 幼年电离星团'
-                      : b.category === 'black_hole'
-                        ? '黑洞'
-                        : `${Math.round(b.temperature)} K`,
+              b.isWormhole
+                ? '3D 可穿越虫洞'
+                : b.galaxyType === 'andromeda'
+                  ? '旋涡星系 SA(s)b'
+                  : b.galaxyType
+                    ? '矮椭圆伴星系'
+                    : b.nebulaType === 'pillars_of_creation'
+                      ? '冷分子云 · 创生之柱'
+                      : b.nebulaType === 'ngc6611_cluster'
+                        ? 'O/B 幼年电离星团'
+                        : b.category === 'black_hole'
+                          ? '黑洞'
+                          : `${Math.round(b.temperature)} K`,
           });
         }
         this.callbacks.onLabelsUpdate(projected);
@@ -2175,6 +2604,11 @@ export class SceneManager {
           this.recordingActualFormat
         );
       }
+      if (this.astroPhotoActive && this.astroStacking) {
+        this.callbacks.onAstroStackTelemetry?.(
+          this.astroPhotoPipeline.getStatus(this.astroSettings, true, false)
+        );
+      }
     }
   };
 
@@ -2182,6 +2616,7 @@ export class SceneManager {
     this.disposed = true;
     this.videoRecorder.abort();
     this.unlockRecordingResolution();
+    this.astroPhotoPipeline.dispose();
     cancelAnimationFrame(this.rafId);
     const dom = this.renderer.domElement;
     dom.removeEventListener('pointerdown', this.handlePointerDown);
@@ -2200,6 +2635,7 @@ export class SceneManager {
     this.highEnergyRenderer.disposeAll();
     this.spacetimeGrid.dispose();
     this.scienceOverlays.dispose();
+    this.wormholeTunnelFx.dispose();
     this.controls.dispose();
     this.renderer.dispose();
     if (dom.parentElement === this.container) {

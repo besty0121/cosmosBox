@@ -3576,3 +3576,549 @@ export function createNgc6611ClusterMaterial(): THREE.ShaderMaterial {
     depthWrite: false,
   });
 }
+
+// ============================================================================
+// 13. TRAVERSABLE MORRIS-THORNE / ELLIS SPACETIME WORMHOLE (3D PORTAL SHADER)
+//     - Exact RK2 null-geodesic integration in proper radial coordinate l
+//     - Smooth metric r(l)^2 = b0^2 + l^4 / (l^2 + a^2): zero event horizon!
+//     - Outer rays (B > b0) deflect back to origin universe + live Milky Way
+//       & neighbor-planet Einstein ring reflection
+//     - Inner rays (B < b0) cross l > 0 -> l < 0 and render a full 360 deg
+//       distorted alien destination cosmos inside the crystal sphere
+// ============================================================================
+
+export function createWormholeMaterial(
+  body: CelestialBody,
+  textures: PlanetTextures
+): THREE.ShaderMaterial {
+  const destMap: Record<string, number> = {
+    pillars_of_creation: 0.0,
+    andromeda_galaxy: 1.0,
+    black_hole_tde: 2.0,
+    wormhole_saturn: 3.0,
+  };
+  const destVal = destMap[body.wormholeDestination ?? 'pillars_of_creation'] ?? 0.0;
+
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uInvModelMatrix: { value: new THREE.Matrix4() },
+      uModelRotMatrix: { value: new THREE.Matrix3() },
+      uThroatRadius: { value: body.wormholeThroatScale ?? 1.55 },
+      uThroatLength: { value: body.wormholeLength ?? 1.0 },
+      uDestMode: { value: destVal },
+      uTransitBoost: { value: 0.0 },
+      uNeighborDir: { value: new THREE.Vector3(0, 0, -1) },
+      uNeighborAngRad: { value: 0.0 },
+      uNeighborColor: { value: new THREE.Color('#e8d29e') },
+      uMilkyWay: { value: textures.milkyWay },
+      uPlasmaMap: { value: textures.sun },
+      uSaturnMap: { value: textures.saturn },
+      uSaturnRingMap: { value: textures.saturnRing },
+    },
+    vertexShader: /* glsl */ `
+      uniform mat4 uInvModelMatrix;
+      varying vec3 vLocalPos;
+      varying vec3 vLocalCamPos;
+
+      void main() {
+        vLocalPos = position;
+        vec4 invCam = uInvModelMatrix * vec4(cameraPosition, 1.0);
+        vLocalCamPos = invCam.xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform float uTime;
+      uniform mat3 uModelRotMatrix;
+      uniform float uThroatRadius;
+      uniform float uThroatLength;
+      uniform float uDestMode;
+      uniform float uTransitBoost;
+      uniform vec3 uNeighborDir;
+      uniform float uNeighborAngRad;
+      uniform vec3 uNeighborColor;
+      uniform sampler2D uMilkyWay;
+      uniform sampler2D uPlasmaMap;
+      uniform sampler2D uSaturnMap;
+      uniform sampler2D uSaturnRingMap;
+
+      varying vec3 vLocalPos;
+      varying vec3 vLocalCamPos;
+
+      const float PI = 3.14159265359;
+
+      float whHash2(vec2 p) {
+        vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+        p3 += dot(p3, p3.yzx + 33.33);
+        return fract((p3.x + p3.y) * p3.z);
+      }
+
+      float whNoise2(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        float a = whHash2(i);
+        float b = whHash2(i + vec2(1.0, 0.0));
+        float c = whHash2(i + vec2(0.0, 1.0));
+        float d = whHash2(i + vec2(1.0, 1.0));
+        return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+      }
+
+      float whFbm2(vec2 p) {
+        float v = 0.56 * whNoise2(p);
+        v += 0.30 * whNoise2(p * 2.08 + vec2(13.7, 7.3));
+        v += 0.14 * whNoise2(p * 4.21 + vec2(3.1, 19.4));
+        return v;
+      }
+
+      vec3 sampleOriginSky(vec3 worldDir) {
+        vec3 wd = normalize(worldDir);
+        float u = atan(wd.z, wd.x) / (2.0 * PI) + 0.5;
+        float v = asin(clamp(wd.y, -1.0, 1.0)) / PI + 0.5;
+        return texture2D(uMilkyWay, vec2(u, v)).rgb * 0.58;
+      }
+
+      vec3 sampleDestSky(vec3 worldDir, float yawShift, float pitchShift) {
+        vec3 d = normalize(worldDir);
+        float cy = cos(yawShift);
+        float sy = sin(yawShift);
+        d = vec3(cy * d.x + sy * d.z, d.y, -sy * d.x + cy * d.z);
+        float cp = cos(pitchShift);
+        float sp = sin(pitchShift);
+        d = normalize(vec3(d.x, cp * d.y - sp * d.z, sp * d.y + cp * d.z));
+        float u = atan(d.z, d.x) / (2.0 * PI) + 0.5;
+        float v = asin(clamp(d.y, -1.0, 1.0)) / PI + 0.5;
+        return texture2D(uMilkyWay, vec2(u, v)).rgb;
+      }
+
+      // Smooth procedural starfield from spherical direction
+      vec3 evalPortalStars(vec3 dir, float densityScale, vec3 tint) {
+        vec2 sph = vec2(atan(dir.z, dir.x), asin(clamp(dir.y, -1.0, 1.0))) * densityScale;
+        vec2 cell = floor(sph);
+        vec2 f = fract(sph) - 0.5;
+        float h = whHash2(cell);
+        vec2 off = vec2(whHash2(cell + 17.1) - 0.5, whHash2(cell + 43.7) - 0.5) * 0.58;
+        float d = length(f - off);
+        float bright = step(0.84, h) * exp(-d * d * 95.0);
+        vec3 starHue = mix(vec3(0.72, 0.88, 1.25), tint, whHash2(cell + 91.3));
+        return starHue * bright * (0.55 + 1.45 * fract(h * 19.3));
+      }
+
+      // Helper for one M16 Pillar column silhouette & sunlit rim in portal angular coords
+      vec3 evalPillarColumn(vec2 uv, float x0, float yBot, float yTop, float halfW, float wobbleSeed, vec3 prevCol) {
+        float h = clamp((uv.y - yBot) / max(0.05, yTop - yBot), 0.0, 1.0);
+        float inSpan = smoothstep(yBot - 0.03, yBot + 0.04, uv.y) * (1.0 - smoothstep(yTop - 0.04, yTop + 0.04, uv.y));
+        float n = whFbm2(uv * vec2(7.5, 5.2) + vec2(wobbleSeed, 0.0));
+        float center = x0 + 0.055 * sin(h * 4.2 + wobbleSeed) + (n - 0.5) * 0.065;
+        float width = halfW * mix(1.22, 0.58, h) * (0.82 + 0.36 * n);
+        // Sculpted bulbous protostar knot cap
+        float tipBulb = exp(-pow(max(1e-4, length((uv - vec2(center, yTop)) / max(0.02, halfW * 1.15))), 2.0)) * 0.85;
+        // Subtle geodesic deflection fade & bright dust interior
+        float dx = uv.x - center;
+        float bodyMask = clamp((1.0 - smoothstep(width * 0.62, width * 1.08, abs(dx))) * inSpan + tipBulb, 0.0, 1.0);
+
+        // Dark ochre-chocolate molecular dust interior + warm peach-gold UV-lit upper-left ridge + cyan ionized halo
+        vec3 darkInterior = mix(vec3(0.11, 0.06, 0.04), vec3(0.46, 0.24, 0.13), n * 0.85);
+        float upperLeftLit = clamp((-dx / max(width, 0.02)) * 0.65 + h * 0.55, 0.0, 1.0);
+        float qRim = abs(abs(dx) - width * 0.84) / max(0.015, width * 0.28);
+        float rimGlow = exp(-qRim * qRim) * inSpan * (0.45 + 0.85 * upperLeftLit);
+        vec3 goldEdge = vec3(1.18, 0.72, 0.36) * rimGlow;
+        float qSteam = max(0.0, abs(dx) - width * 0.92) * 14.0;
+        vec3 cyanSteam = vec3(0.32, 0.84, 1.12) * exp(-qSteam * qSteam) * inSpan * 0.52;
+        float qTip = length(uv - vec2(center, yTop)) * 18.0;
+        float protostarTip = exp(-qTip * qTip) * 0.95;
+        vec3 rubyTip = vec3(1.35, 0.38, 0.42) * protostarTip;
+
+        vec3 pillarShade = darkInterior + goldEdge + rubyTip;
+        return mix(prevCol + cyanSteam, pillarShade + cyanSteam * 0.35, bodyMask * 0.92);
+      }
+
+      // Mode 0: Eagle Nebula M16 — Pillars of Creation (3D panoramic alien sky)
+      vec3 evalDestPillars(vec3 dir, float time) {
+        vec3 d = normalize(dir);
+        vec3 col = sampleDestSky(d, 1.85, 0.32) * 0.34;
+
+        // Deep cobalt-teal M16 nebula basin glow across whole 360 sphere (calibrated for high JWST contrast)
+        float cloud = whFbm2(vec2(atan(d.z, d.x) * 2.2, d.y * 3.4) + vec2(1.4, -0.8));
+        vec3 eagleCyan = vec3(0.08, 0.24, 0.40) * (0.28 + 0.55 * cloud);
+        vec3 warmBasin = vec3(0.38, 0.21, 0.11) * (1.0 - smoothstep(-0.35, 0.45, d.y)) * cloud * 0.42;
+        col += eagleCyan + warmBasin + evalPortalStars(d, 24.0, vec3(1.25, 0.95, 0.78)) * 0.36;
+
+        // Hero Pillars sculptural vista anchored toward -Z hemisphere
+        vec3 fwd = normalize(vec3(-0.08, 0.02, -1.0));
+        float zFacing = dot(d, fwd);
+        if (zFacing > 0.12) {
+          vec3 right = normalize(cross(vec3(0.0, 1.0, 0.0), fwd));
+          vec3 up = normalize(cross(fwd, right));
+          vec2 p = vec2(dot(d, right), dot(d, up)) / (zFacing * 0.75 + 0.25) * 0.48;
+          float vistaMask = smoothstep(0.14, 0.52, zFacing) * (1.0 - smoothstep(0.68, 1.18, length(p)));
+          if (vistaMask > 0.01) {
+            // Rotate pillars diagonally at M16's iconic ~26 deg angle toward NGC 6611 upper-left!
+            vec2 pr = vec2(p.x * 0.90 + p.y * 0.44, -p.x * 0.44 + p.y * 0.90);
+            vec3 neb = col;
+            // Subtle NGC 6611 ionizing OB star cluster glow in upper-left
+            vec2 clusterPos = vec2(-0.28, 0.34);
+            float obGlow = exp(-length(p - clusterPos) * 4.6) * 0.34;
+            neb += vec3(0.45, 0.74, 1.18) * obGlow;
+
+            neb = evalPillarColumn(pr, -0.22, -0.52, 0.36, 0.105, 1.7, neb);
+            neb = evalPillarColumn(pr, 0.02, -0.52, 0.18, 0.092, 4.3, neb);
+            neb = evalPillarColumn(pr, 0.24, -0.52, -0.02, 0.078, 7.1, neb);
+
+            // Bright sparkling NGC 6611 blue-white stars & HH jet glints
+            vec2 starOff1 = p - vec2(-0.24, 0.32);
+            vec2 starOff2 = p - vec2(-0.36, 0.24);
+            vec2 starOff3 = p - vec2(0.18, 0.28);
+            neb += vec3(0.95, 1.15, 1.45) * exp(-dot(starOff1, starOff1) * 900.0) * 1.25;
+            neb += vec3(0.85, 1.08, 1.40) * exp(-dot(starOff2, starOff2) * 1100.0) * 1.0;
+            neb += vec3(1.25, 1.02, 0.82) * exp(-dot(starOff3, starOff3) * 1050.0) * 1.0;
+            col = mix(col, neb, vistaMask);
+          }
+        }
+        // Subtle living ionized mist shimmer
+        col *= 0.96 + 0.04 * sin(time * 1.1 + d.y * 4.0);
+        return col;
+      }
+
+      // Mode 1: Andromeda Galaxy M31 (3D tilted spiral galaxy + companions)
+      vec3 evalDestAndromeda(vec3 dir, float time) {
+        vec3 d = normalize(dir);
+        vec3 col = sampleDestSky(d, 3.1, -0.45) * 0.36;
+        col += evalPortalStars(d, 26.0, vec3(1.15, 1.02, 0.92)) * 0.38;
+
+        vec3 fwd = normalize(vec3(-0.06, 0.03, -1.0));
+        float zFacing = dot(d, fwd);
+        if (zFacing > 0.1) {
+          vec3 right = normalize(cross(vec3(0.0, 1.0, 0.0), fwd));
+          vec3 up = normalize(cross(fwd, right));
+          vec2 p = vec2(dot(d, right), dot(d, up)) / (zFacing * 0.72 + 0.28) * 0.44;
+          float vistaMask = smoothstep(0.12, 0.50, zFacing) * (1.0 - smoothstep(0.75, 1.28, length(p)));
+          if (vistaMask > 0.01) {
+            // Iconic 77-deg tilted ellipse at PA ~ 35 deg
+            vec2 pr = vec2(p.x * 0.82 + p.y * 0.57, -p.x * 0.57 + p.y * 0.82);
+            vec2 pd = vec2(pr.x, pr.y * 3.15);
+            float r = length(pd);
+            float ang = atan(pd.y, pd.x) - time * 0.015;
+            float logR = log(max(r, 0.018));
+
+            float armPhase = 2.0 * ang - logR * 4.6;
+            float arms = pow(max(1e-4, 0.5 + 0.5 * cos(armPhase)), 2.2);
+            float qRing = (r - 0.36) * 8.5;
+            float ring10 = exp(-qRing * qRing) * 0.85;
+            float clumps = whFbm2(pd * 16.0 + vec2(5.2, 2.9));
+            float dust = smoothstep(0.42, 0.74, whFbm2(pd * 12.0 + vec2(1.1, 8.7))) * smoothstep(0.08, 0.25, r) * (1.0 - smoothstep(0.45, 0.75, r));
+
+            float diskEnv = exp(-r * 3.4);
+            float bulge = exp(-r * r * 36.0) * 1.45 + exp(-r * 10.5) * 0.65;
+
+            vec3 bulgeCol = mix(vec3(1.15, 0.82, 0.54), vec3(1.48, 1.34, 1.15), clamp(bulge * 0.7, 0.0, 1.0));
+            vec3 armCol = mix(vec3(0.42, 0.72, 1.28), vec3(1.38, 0.36, 0.64), smoothstep(0.62, 0.86, clumps) * 0.52);
+
+            vec3 m31 = armCol * diskEnv * (0.28 + 0.85 * arms + ring10 * (0.55 + 0.75 * clumps));
+            m31 *= 1.0 - dust * 0.68;
+            m31 += bulgeCol * bulge;
+
+            // Companions M32 & M110
+            vec2 m32Pos = pr - vec2(0.09, 0.16);
+            vec2 m110Pos = pr - vec2(-0.26, -0.22);
+            m31 += vec3(1.25, 1.05, 0.82) * exp(-dot(m32Pos, m32Pos) * 420.0) * 0.95;
+            m31 += vec3(0.88, 0.98, 1.20) * exp(-dot(m110Pos, m110Pos) * 210.0) * 0.55;
+
+            col += m31 * vistaMask * 0.92;
+          }
+        }
+        return col;
+      }
+
+      // Mode 2: Gargantua Black Hole & Accretion Disk
+      vec3 evalDestBlackHole(vec3 dir, float time) {
+        vec3 d = normalize(dir);
+        vec3 col = sampleDestSky(d, 4.4, -0.22) * 0.45;
+
+        vec3 fwd = normalize(vec3(-0.04, 0.02, -1.0));
+        float zFacing = dot(d, fwd);
+        if (zFacing > 0.1) {
+          vec3 right = normalize(cross(vec3(0.0, 1.0, 0.0), fwd));
+          vec3 up = normalize(cross(fwd, right));
+          vec2 p = vec2(dot(d, right), dot(d, up)) / (zFacing * 0.74 + 0.26) * 0.46;
+          // Slight tilt of accretion plane
+          vec2 pr = vec2(p.x * 0.98 + p.y * 0.18, -p.x * 0.18 + p.y * 0.98);
+
+          float rShadow = length(pr);
+          float bhCoreR = 0.135;
+          float shadowMask = smoothstep(bhCoreR * 0.94, bhCoreR * 1.08, rShadow);
+
+          // Upper & lower lensed photon arches curling smoothly around the black hole shadow
+          vec2 archD = vec2(pr.x * 0.92, pr.y * 1.15);
+          float rArch = length(archD);
+          float qArch = (rArch - bhCoreR * 1.24) * 26.0;
+          float archBand = exp(-qArch * qArch) * smoothstep(0.015, 0.09, abs(pr.y));
+          float qPhot = (rShadow - bhCoreR * 1.03) * 65.0;
+          float photonRing = exp(-qPhot * qPhot) * 1.35;
+
+          // Foreground flattened equatorial accretion disk (front passes across shadow!)
+          vec2 diskP = vec2(pr.x, pr.y * 4.6);
+          float rDisk = length(diskP);
+          float angD = atan(diskP.y, diskP.x);
+          float texVal = dot(texture2D(uPlasmaMap, vec2(angD / (2.0 * PI) + 0.85 / max(rDisk, 0.12) - time * 0.18, rDisk * 2.2)).rgb, vec3(0.3, 0.59, 0.11));
+          float diskEnv = smoothstep(bhCoreR * 1.08, bhCoreR * 1.38, rDisk) * (1.0 - smoothstep(0.36, 0.74, rDisk));
+          float doppler = clamp(1.0 - (pr.x / max(rDisk, 0.1)) * 0.42, 0.52, 1.65);
+
+          vec3 diskCol = mix(vec3(1.38, 0.96, 0.62), vec3(1.18, 0.52, 0.16), smoothstep(0.18, 0.62, rDisk));
+          float frontMask = pr.y <= 0.035 ? 1.0 : shadowMask;
+          vec3 eqDisk = diskCol * diskEnv * (0.55 + 0.95 * texVal) * doppler * 1.35 * frontMask;
+
+          // Secondary lensed upper/lower arch filaments
+          float archTex = dot(texture2D(uPlasmaMap, vec2(atan(pr.y, pr.x) / (2.0 * PI) - time * 0.12, rArch * 3.5)).rgb, vec3(0.3, 0.59, 0.11));
+          vec3 archCol = vec3(1.25, 0.78, 0.36) * archBand * (0.6 + 0.8 * archTex) * doppler;
+
+          // Subtle polar relativistic jet glow
+          float qJet = pr.x * 24.0;
+          float jetW = exp(-qJet * qJet) * smoothstep(bhCoreR * 1.1, 0.38, abs(pr.y)) * (1.0 - smoothstep(0.38, 0.85, abs(pr.y)));
+          vec3 jetCol = vec3(0.45, 0.74, 1.35) * jetW * 0.42;
+
+          float vistaFade = smoothstep(0.15, 0.52, zFacing);
+          col *= mix(1.0, shadowMask, vistaFade);
+          col += (eqDisk + archCol + vec3(1.0, 0.92, 0.78) * photonRing + jetCol) * vistaFade;
+        }
+        return col;
+      }
+
+      // Mode 3: Sunlit Saturn & Cassini Rings (seen looking back through return portal!)
+      vec3 evalDestSaturn(vec3 dir) {
+        vec3 d = normalize(dir);
+        vec3 col = sampleOriginSky(d) * 0.85;
+
+        // Warm distant Sun glint in Saturn's sky
+        vec3 sunDir = normalize(vec3(-0.76, 0.24, 0.60));
+        float sunDot = max(1e-4, dot(d, sunDir));
+        col += vec3(1.45, 1.18, 0.78) * pow(sunDot, 220.0) * 0.85 + vec3(1.0, 0.72, 0.35) * pow(sunDot, 36.0) * 0.08;
+
+        // Place 3D Saturn sphere slightly left of -Z so both straight & oblique return portals frame it cleanly!
+        vec3 satCenter = normalize(vec3(-0.22, 0.03, -0.975)) * 1.12;
+        float satR = 0.42;
+        vec3 oc = -satCenter;
+        float b = dot(oc, d);
+        float c = dot(oc, oc) - satR * satR;
+        float disc = b * b - c;
+
+        float tSphere = 1e6;
+        bool hitSphere = false;
+        if (disc > 0.0) {
+          float ts = -b - sqrt(disc);
+          if (ts > 0.0) {
+            tSphere = ts;
+            hitSphere = true;
+          }
+        }
+
+        // Tilted Saturn axial & ring basis (26.7 deg axial tilt + rolled slightly so rings showcase Cassini division!)
+        vec3 rNormal = normalize(vec3(-0.18, 0.90, 0.40));
+        vec3 rU = normalize(cross(rNormal, vec3(0.0, 0.0, 1.0)));
+        vec3 rV = normalize(cross(rNormal, rU));
+
+        float denom = dot(d, rNormal);
+        float tRing = 1e6;
+        bool hitRing = false;
+        vec4 ringRGBA = vec4(0.0);
+        if (abs(denom) > 1e-4) {
+          float tr = dot(satCenter, rNormal) / denom;
+          if (tr > 0.0) {
+            vec3 hitP = d * tr - satCenter;
+            float distR = length(hitP) / satR;
+            if (distR > 1.28 && distR < 2.35) {
+              float tMap = clamp((distR - 1.28) / (2.35 - 1.28), 0.0, 1.0);
+              vec4 rs = texture2D(uSaturnRingMap, vec2(tMap, 0.5));
+              if (rs.a > 0.02) {
+                // Planet shadow cast onto rings
+                vec3 pToSun = hitP - sunDir * dot(hitP, sunDir);
+                float shDot = dot(hitP, sunDir);
+                float sh = shDot > 0.0 ? 1.0 : smoothstep(satR * 0.95, satR * 1.05, length(pToSun));
+                ringRGBA = vec4(rs.rgb * (0.04 + 1.15 * sh), rs.a * 0.94);
+                tRing = tr;
+                hitRing = true;
+              }
+            }
+          }
+        }
+
+        vec3 sphereCol = vec3(0.0);
+        if (hitSphere) {
+          vec3 hitPos = d * tSphere;
+          vec3 N = normalize(hitPos - satCenter);
+          vec3 nLocal = vec3(dot(N, rU), dot(N, rNormal), dot(N, rV));
+          float u = atan(nLocal.z, nLocal.x) / (2.0 * PI) + 0.5;
+          float v = asin(clamp(nLocal.y, -1.0, 1.0)) / PI + 0.5;
+          vec3 albedo = texture2D(uSaturnMap, vec2(u, v)).rgb;
+
+          // Cast ring shadow onto Saturn's cloud tops
+          float sunRingDenom = dot(sunDir, rNormal);
+          float ringSh = 1.0;
+          if (abs(sunRingDenom) > 1e-4) {
+            float srT = -dot(hitPos - satCenter, rNormal) / sunRingDenom;
+            if (srT > 0.0) {
+              vec3 srP = (hitPos - satCenter) + sunDir * srT;
+              float srR = length(srP) / satR;
+              if (srR > 1.28 && srR < 2.35) {
+                float rt = clamp((srR - 1.28) / (2.35 - 1.28), 0.0, 1.0);
+                ringSh = 1.0 - texture2D(uSaturnRingMap, vec2(rt, 0.5)).a * 0.72;
+              }
+            }
+          }
+
+          float ndl = max(0.0, dot(N, sunDir));
+          float limb = pow(max(1e-4, abs(dot(N, -d))), 0.25);
+          float rim = pow(max(1e-4, 1.0 - abs(dot(N, -d))), 3.2) * (0.2 + 0.8 * ndl);
+          sphereCol = albedo * (0.04 + ndl * 1.22 * ringSh) * limb + vec3(0.95, 0.86, 0.68) * rim * 0.22;
+        }
+
+        if (hitSphere && hitRing) {
+          if (tRing < tSphere) {
+            col = mix(sphereCol, ringRGBA.rgb, ringRGBA.a);
+          } else {
+            col = sphereCol;
+          }
+        } else if (hitSphere) {
+          col = sphereCol;
+        } else if (hitRing) {
+          col = mix(col, ringRGBA.rgb, ringRGBA.a);
+        }
+        return col;
+      }
+
+      vec3 evalDestUniverse(vec3 worldDir, float mode, float time) {
+        if (mode < 0.5) return evalDestPillars(worldDir, time);
+        if (mode < 1.5) return evalDestAndromeda(worldDir, time);
+        if (mode < 2.5) return evalDestBlackHole(worldDir, time);
+        return evalDestSaturn(worldDir);
+      }
+
+      vec2 metricR2AndAccel(float lv, float b02, float a2, float B2) {
+        float l2 = lv * lv;
+        float d = l2 + a2;
+        float r2 = b02 + (l2 * l2) / d;
+        float acc = B2 * (lv * l2 * (l2 + 2.0 * a2)) / (r2 * r2 * d * d);
+        return vec2(r2, acc);
+      }
+
+      void main() {
+        vec3 ro = vLocalCamPos;
+        vec3 rd = normalize(vLocalPos - vLocalCamPos);
+
+        const float BOUND_R = 7.5;
+        float qb = dot(ro, rd);
+        float qc = dot(ro, ro) - BOUND_R * BOUND_R;
+        float qdisc = qb * qb - qc;
+        if (qdisc < 0.0) discard;
+
+        float tEntry = max(0.0, -qb - sqrt(qdisc));
+        vec3 pStart = ro + rd * tEntry;
+        float R0 = max(length(pStart), 0.05);
+
+        float b0 = clamp(uThroatRadius, 0.75, 2.8);
+        float b02 = b0 * b0;
+        float a = max(0.08, uThroatLength);
+        float a2 = a * a;
+
+        vec3 eR = pStart / R0;
+        float cosPsi = clamp(-dot(rd, eR), -1.0, 1.0);
+        vec3 tang = rd + eR * cosPsi;
+        float sinPsi = length(tang);
+        vec3 ePhi = sinPsi > 1e-5
+          ? (tang / sinPsi)
+          : normalize(cross(abs(eR.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), eR));
+
+        // Exact proper radial coordinate l0 solving r(l0)^2 = b0^2 + l0^4 / (l0^2 + a^2) = R0^2
+        float w = max(0.0, R0 * R0 - b02);
+        float l0 = sqrt(max(0.0, 0.5 * (w + sqrt(w * w + 4.0 * w * a2))));
+        float B = max(R0, b0) * sinPsi;
+        float B2 = B * B;
+
+        float l = l0;
+        float pl = -cosPsi;
+        if (R0 <= b0 * 1.01) {
+          l = max(0.02, R0 - b0 * 0.98);
+          B = b0 * 0.97 * sinPsi;
+          B2 = B * B;
+          pl = (cosPsi >= 0.0 ? -1.0 : 1.0) * sqrt(max(0.0, 1.0 - B2 / (b02 + 1e-4)));
+        }
+        float phi = 0.0;
+
+        float dither = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+        l += pl * (dither * 0.04);
+
+        const int STEPS = 60;
+        for (int i = 0; i < STEPS; i++) {
+          if (l > l0 + 1.5 && pl > 0.0) break;
+          if (l < -(l0 + 2.5) && pl < 0.0) break;
+
+          float ds = clamp(0.095 + 0.145 * abs(l), 0.085, 0.72);
+          vec2 m1 = metricR2AndAccel(l, b02, a2, B2);
+          float dphi1 = B / m1.x;
+
+          float halfDs = 0.5 * ds;
+          float midL = l + pl * halfDs;
+          float midPl = pl + m1.y * halfDs;
+          vec2 m2 = metricR2AndAccel(midL, b02, a2, B2);
+          float dphi2 = B / m2.x;
+
+          l += midPl * ds;
+          pl += m2.y * ds;
+          phi += dphi2 * ds;
+        }
+
+        float lEnd2 = l * l;
+        float rEnd = sqrt(b02 + (lEnd2 * lEnd2) / (lEnd2 + a2));
+        phi += asin(clamp(B / max(rEnd, B + 1e-4), 0.0, 1.0));
+
+        // Chromatic exotic-matter refraction whisper tightly hugging the photon-sphere rim B ~ b0
+        float ratioB = B / b0;
+        float qIn = max(0.0, 1.0 - ratioB) * 20.0;
+        float qOut = max(0.0, ratioB - 1.0) * 22.0;
+        float innerCaustic = exp(-qIn * qIn);
+        float outerCaustic = exp(-qOut * qOut);
+
+        if (l < 0.0) {
+          vec3 localDestDir = normalize(-(cos(phi) * eR + sin(phi) * ePhi));
+          vec3 worldDestDir = normalize(uModelRotMatrix * localDestDir);
+          vec3 destCol = evalDestUniverse(worldDestDir, uDestMode, uTime);
+
+          // Delicate cyan-violet throat caustic along inner edge + subtle transit rim glow
+          vec3 rimHue = mix(vec3(0.45, 0.92, 1.35), vec3(0.95, 0.65, 1.35), 0.5 + 0.5 * sin(phi * 3.0 - uTime * 2.2));
+          destCol += rimHue * innerCaustic * (0.42 + uTransitBoost * 0.35);
+
+          gl_FragColor = vec4(destCol, 1.0);
+        } else {
+          vec3 localOutDir = normalize(cos(phi) * eR + sin(phi) * ePhi);
+          vec3 worldOutDir = normalize(uModelRotMatrix * localOutDir);
+          vec3 originCol = sampleOriginSky(worldOutDir);
+
+          // Live outer-ring gravitational lensing reflection of nearest neighbor (e.g., Saturn & rings!)
+          if (uNeighborAngRad > 0.005) {
+            float cosAng = dot(localOutDir, normalize(uNeighborDir));
+            float thresh = cos(min(1.2, uNeighborAngRad * 1.45));
+            if (cosAng > thresh) {
+              float arc = smoothstep(thresh, 1.0, cosAng);
+              originCol = mix(originCol, uNeighborColor * 1.05, arc * 0.68);
+            }
+          }
+
+          // Delicate hair-thin outer Einstein ring glow around B -> b0+
+          vec3 outerHue = mix(vec3(0.55, 0.90, 1.32), vec3(1.15, 0.88, 0.62), 0.45);
+          originCol += outerHue * outerCaustic * (0.38 + uTransitBoost * 0.55);
+
+          float bendAmount = clamp(1.0 - dot(localOutDir, rd), 0.0, 1.0);
+          float outerFade = 1.0 - smoothstep(BOUND_R * 0.74, BOUND_R * 0.985, R0 * sinPsi);
+          float alpha = clamp(max(smoothstep(0.0018, 0.036, bendAmount), outerCaustic * 0.85) * outerFade, 0.0, 1.0);
+          if (alpha < 0.006) discard;
+
+          gl_FragColor = vec4(originCol, alpha);
+        }
+      }
+    `,
+    side: THREE.BackSide,
+    transparent: true,
+    depthWrite: false,
+  });
+}

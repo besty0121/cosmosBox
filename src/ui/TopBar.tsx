@@ -18,6 +18,7 @@ import {
   ShieldAlert,
   Sprout,
   Tag,
+  Telescope,
   Volume2,
   VolumeX,
   Wind,
@@ -45,6 +46,7 @@ export function TopBar() {
   const audioMuted = useCosmosStore((s) => s.audioMuted);
   const bodyListOpen = useCosmosStore((s) => s.bodyListOpen);
   const directorOpen = useCosmosStore((s) => s.directorOpen);
+  const astroPhotoActive = useCosmosStore((s) => s.astroPhotoActive);
   const recordingActive = useCosmosStore((s) => s.recordingActive);
   const simTime = useCosmosStore((s) => s.simTime);
   const fps = useCosmosStore((s) => s.fps);
@@ -70,6 +72,7 @@ export function TopBar() {
   const toggleAudioMute = useCosmosStore((s) => s.toggleAudioMute);
   const toggleBodyList = useCosmosStore((s) => s.toggleBodyList);
   const toggleDirectorOpen = useCosmosStore((s) => s.toggleDirectorOpen);
+  const toggleAstroPhoto = useCosmosStore((s) => s.toggleAstroPhoto);
   const toggleHud = useCosmosStore((s) => s.toggleHud);
   const setSaveModalOpen = useCosmosStore((s) => s.setSaveModalOpen);
   const takeSnapshot = useCosmosStore((s) => s.takeSnapshot);
@@ -169,6 +172,15 @@ export function TopBar() {
         >
           {recordingActive ? <span className="rec-dot" /> : <Clapperboard size={14} />}
           {recordingActive ? '录制中' : '运镜'}
+        </button>
+
+        <button
+          className={`hud-btn ${astroPhotoActive ? 'active' : ''}`}
+          onClick={toggleAstroPhoto}
+          title="虚拟深空天文摄影：望远镜目镜与长曝光堆栈 (T)"
+        >
+          <Telescope size={14} />
+          {astroPhotoActive ? '摄影中' : '摄影'}
         </button>
 
         <button

@@ -28,6 +28,12 @@ export type NebulaVisualType = 'pillars_of_creation' | 'ngc6611_cluster';
 
 export type NebulaSpectrumMode = 'hst_optical' | 'jwst_nircam' | 'jwst_miri';
 
+export type WormholeDestinationId =
+  | 'pillars_of_creation'
+  | 'andromeda_galaxy'
+  | 'black_hole_tde'
+  | 'wormhole_saturn';
+
 export type LaunchMode = 'orbit' | 'slingshot' | 'stationary';
 
 export type CameraMode = 'orbit' | 'surface' | 'cinematic' | 'flight' | 'director';
@@ -102,6 +108,14 @@ export interface CelestialBody {
   nebulaIrPenetration?: number;
   /** Volumetric dust column density multiplier [0.4..1.8] */
   nebulaDensity?: number;
+  /** Marks a traversable Morris-Thorne / Ellis spacetime wormhole portal */
+  isWormhole?: boolean;
+  /** Dimensionless Morris-Thorne throat radius b0 [0.9..2.3] */
+  wormholeThroatScale?: number;
+  /** Throat tunnel curvature length scale a [0.15..2.8] */
+  wormholeLength?: number;
+  /** Connected destination universe scenario id */
+  wormholeDestination?: WormholeDestinationId;
 
   // Rotation & visual appearance
   /** Sidereal rotation period in seconds */
@@ -257,6 +271,10 @@ export interface SpawnTemplate {
   ringInner?: number;
   ringOuter?: number;
   ringColor?: string;
+  isWormhole?: boolean;
+  wormholeThroatScale?: number;
+  wormholeLength?: number;
+  wormholeDestination?: WormholeDestinationId;
 }
 
 export interface ScenarioDefinition {
@@ -327,6 +345,10 @@ export interface BodySnapshot {
   nebulaSpectrumMode?: NebulaSpectrumMode;
   nebulaIrPenetration?: number;
   nebulaDensity?: number;
+  isWormhole?: boolean;
+  wormholeThroatScale?: number;
+  wormholeLength?: number;
+  wormholeDestination?: WormholeDestinationId;
   jupiterTorus?: boolean;
   volcanicIo?: boolean;
   rotationPeriod: number;
@@ -387,4 +409,55 @@ export interface DirectorScriptFile {
   scenarioId: string;
   exportedAt: number;
   keyframes: DirectorKeyframe[];
+}
+
+export type AstroTelescopePreset =
+  | 'eyepiece'
+  | 'hubble'
+  | 'jwst'
+  | 'newtonian'
+  | 'refractor';
+
+export type AstroFilterMode = 'lrgb' | 'sho' | 'ha' | 'oiii' | 'ir';
+
+export interface AstroPhotoSettings {
+  telescope: AstroTelescopePreset;
+  filter: AstroFilterMode;
+  /** Equivalent focal length in mm (200..2400) */
+  focalLengthMm: number;
+  /** ISO sensitivity (100..6400) */
+  iso: number;
+  /** Simulated single sub-exposure in seconds (1..30) */
+  subExposureSec: number;
+  /** Target number of frames to stack (8..128) */
+  targetFrames: number;
+  /** Bortle sky light-pollution class (1..9) */
+  bortle: number;
+  /** Defocus blur [0..1] (diffraction donut on reflectors, soft disk on refractors) */
+  defocus: number;
+  /** Non-destructive Asinh midtone stretch [0..1] */
+  stretch: number;
+  /** Non-destructive black point clip [0..0.35] */
+  blackPoint: number;
+  /** Color saturation [0..1.8] */
+  saturation: number;
+  /** Diffraction starburst intensity [0..2.2] */
+  spikeStrength: number;
+  /** Toggle circular eyepiece field stop mask */
+  eyepieceMask: boolean;
+  /** Toggle hairline eyepiece reticle & scale ticks */
+  showReticle: boolean;
+  /** Lock equatorial tracking mount during stacking (disable to capture star/orbit trails) */
+  mountLock: boolean;
+  /** Append dark observatory metadata plate at bottom of exported PNG */
+  includeObservatoryPlate: boolean;
+}
+
+export interface AstroStackStatus {
+  stacking: boolean;
+  stackedFrames: number;
+  targetFrames: number;
+  totalExposureSec: number;
+  snrGain: number;
+  completed: boolean;
 }

@@ -225,7 +225,7 @@ export class SpacetimeGrid {
     const maxDepth = gridScale * 0.24;
 
     const ranked = bodies
-      .filter((b) => b.alive && b.mass > 1e20)
+      .filter((b) => b.alive && (b.mass > 1e20 || b.isWormhole))
       .sort((a, b) => b.mass - a.mass)
       .slice(0, MAX_WELLS);
 
@@ -237,9 +237,13 @@ export class SpacetimeGrid {
         (b.position.z - originMeters.z) * METERS_TO_SCENE
       );
 
-      const logEarth = Math.max(0.1, Math.log10(Math.max(1, b.mass / M_EARTH)) + 1.0);
-      const bhBoost = b.category === 'black_hole' ? 2.4 : b.category === 'star' ? 1.35 : 0.48;
-      this.wellWeights[i] = Math.pow(logEarth, 1.35) * bhBoost * 0.12;
+      if (b.isWormhole) {
+        this.wellWeights[i] = 0.42 * (b.wormholeThroatScale ?? 1.55);
+      } else {
+        const logEarth = Math.max(0.1, Math.log10(Math.max(1, b.mass / M_EARTH)) + 1.0);
+        const bhBoost = b.category === 'black_hole' ? 2.4 : b.category === 'star' ? 1.35 : 0.48;
+        this.wellWeights[i] = Math.pow(logEarth, 1.35) * bhBoost * 0.12;
+      }
     }
 
     const u = this.material.uniforms;
